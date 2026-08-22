@@ -250,7 +250,7 @@ describe("model", () => {
 // ============================================================
 
 describe("layout", () => {
-  it("places leaves at sequential y and internals at the midpoint", () => {
+  it("places leaves at sequential y and internals at the mean of their children", () => {
     const t = parseNewick(SIMPLE);
     const lo = layoutRectangular(t, true);
     const ys = Array.from(t.leaves).map((id) => lo.y[id]);
@@ -258,6 +258,32 @@ describe("layout", () => {
     const ab = t.parent[t.nameToNode.get("A")!];
     expect(lo.y[ab]).toBeCloseTo(0.5, 12);
     expect(lo.y[t.root]).toBeCloseTo(1.5, 12);
+  });
+
+  it("centres an unbalanced parent on its children, not on its leaf span", () => {
+    // ((A,B),C): the root's children sit at y=0.5 and y=2, so the root belongs
+    // at 1.25. Its leaf span midpoint would be 1, which is a different place.
+    const t = parseNewick("((A,B),C);");
+    const lo = layoutRectangular(t, false);
+    const ab = t.parent[t.nameToNode.get("A")!];
+    expect(lo.y[ab]).toBeCloseTo(0.5, 12);
+    expect(lo.y[t.root]).toBeCloseTo(1.25, 12);
+  });
+
+  it("a parent always lies between its outermost children", () => {
+    const t = parseNewick("(((A,B),C),(D,(E,(F,G))));");
+    const lo = layoutRectangular(t, false);
+    for (let id = 0; id < t.count; id++) {
+      if (t.isLeaf[id]) continue;
+      let lo_ = Infinity;
+      let hi = -Infinity;
+      for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
+        lo_ = Math.min(lo_, lo.y[c]);
+        hi = Math.max(hi, lo.y[c]);
+      }
+      expect(lo.y[id]).toBeGreaterThanOrEqual(lo_ - 1e-9);
+      expect(lo.y[id]).toBeLessThanOrEqual(hi + 1e-9);
+    }
   });
 
   it("phylogram x follows cumulative length; cladogram flushes leaves right", () => {

@@ -49,8 +49,29 @@ export function layoutRectangular(t: Tree, phylogram: boolean): RectLayout {
     for (let i = 0; i < t.count; i++) x[i] = maxX - h[i];
   }
 
-  for (let i = 0; i < t.count; i++) {
-    y[i] = t.isLeaf[i] ? t.leafIndex[i] : (t.L[i] + t.R[i] - 1) / 2;
+  // Internal nodes sit at the MEAN of their children, not at the midpoint of
+  // their leaf span.
+  //
+  // The two agree on a balanced tree and diverge sharply on an unbalanced one,
+  // and the difference is visible: a parent placed at its leaf-span midpoint
+  // meets the connector joining its children off-centre, which in the circular
+  // layout reads as the radial branch attaching to one side of the arc rather
+  // than to the middle of it. The mean is the classic dendrogram convention
+  // and makes the join land where the eye expects.
+  const pre = preOrder(t);
+  for (const id of pre) {
+    if (t.isLeaf[id]) y[id] = t.leafIndex[id];
+  }
+  for (let k = pre.length - 1; k >= 0; k--) {
+    const id = pre[k];
+    if (t.isLeaf[id]) continue;
+    let sum = 0;
+    let n = 0;
+    for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
+      sum += y[c];
+      n++;
+    }
+    y[id] = n ? sum / n : 0;
   }
 
   const height = t.leaves.length > 0 ? t.leaves.length - 1 : 1;

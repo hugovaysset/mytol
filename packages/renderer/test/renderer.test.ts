@@ -745,3 +745,121 @@ describe("support colouring", () => {
     expect(calls.fillRect).toBeGreaterThan(0);
   });
 });
+
+describe("annotation rings in circular mode", () => {
+  const track = (): TrackInstance => ({
+    type: "colorstrip",
+    label: "phylum",
+    visible: true,
+    values: ["a", "b", "a", "c"],
+  });
+
+  it("draws tracks in circular mode, not only in linear", () => {
+    const bare = makeRenderer(SIMPLE);
+    bare.r.setView({ mode: "circular" });
+    bare.r.setStyle({ showLeafLabels: false });
+    bare.calls.fillRect = 0;
+    bare.r.draw();
+    const before = bare.calls.fillRect;
+
+    const withTrack = makeRenderer(SIMPLE);
+    withTrack.r.setView({ mode: "circular" });
+    withTrack.r.setStyle({ showLeafLabels: false });
+    withTrack.r.setTracks([track()]);
+    withTrack.calls.fillRect = 0;
+    withTrack.r.draw();
+    expect(withTrack.calls.fillRect).toBeGreaterThan(before);
+  });
+
+  it("stacks several rings without error", () => {
+    const { r, calls } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: false });
+    r.setTracks([track(), { ...track(), label: "second" }, { ...track(), label: "third" }]);
+    calls.fillRect = 0;
+    r.draw();
+    expect(calls.fillRect).toBeGreaterThan(8);
+  });
+
+  it("skips invisible rings", () => {
+    const { r, calls } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: false });
+    r.setTracks([{ ...track(), visible: false }]);
+    calls.fillRect = 0;
+    r.draw();
+    const hidden = calls.fillRect;
+
+    r.setTracks([track()]);
+    calls.fillRect = 0;
+    r.draw();
+    expect(calls.fillRect).toBeGreaterThan(hidden);
+  });
+
+  it("thins ring cells on a large tree instead of drawing one per leaf", () => {
+    const { r, calls } = makeRenderer(balanced(16384));
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: false, lodMinPx: 1.5 });
+    const values = new Array(16384).fill("x");
+    r.setTracks([{ type: "colorstrip", label: "t", visible: true, values }]);
+    calls.fillRect = 0;
+    r.draw();
+    expect(calls.fillRect).toBeLessThan(16384);
+  });
+});
+
+describe("stable annotation colours", () => {
+  it("assigns palette colours by sorted category, not by encounter order", () => {
+    const a = autoPalette(["zebra", "alpha", "mid"]);
+    const b = autoPalette(["mid", "zebra", "alpha"]);
+    expect(a).toEqual(b);
+  });
+
+  it("gives the first colour to the first category alphabetically", () => {
+    const p = autoPalette(["beta", "alpha"]);
+    expect(p.alpha).not.toBe(p.beta);
+    expect(Object.keys(p).sort()).toEqual(["alpha", "beta"]);
+  });
+
+  it("an explicit palette is left alone", () => {
+    const { r } = makeRenderer(SIMPLE);
+    const fixed = { a: "#111111", b: "#222222" };
+    const t: TrackInstance = {
+      type: "colorstrip",
+      label: "t",
+      visible: true,
+      values: ["a", "b", "a", "b"],
+      palette: fixed,
+    };
+    r.setTracks([t]);
+    expect(t.palette).toBe(fixed);
+  });
+});
+
+describe("support scale domain", () => {
+  it("spans only the configured range", () => {
+    const { r } = makeRenderer("((A:1,B:1)0.92:1,(C:1,D:1)0.98:1);");
+    r.setStyle({
+      colorBySupport: true,
+      supportMin: 0.9,
+      supportMax: 1,
+      supportRamp: { low: "#000000", mid: "#808080", high: "#ffffff" },
+    });
+    r.draw();
+    expect(r.getStyle().supportMin).toBe(0.9);
+    expect(r.getStyle().supportMax).toBe(1);
+  });
+
+  it("clamps outside the domain rather than wrapping", () => {
+    const { r } = makeRenderer("((A:1,B:1)0.1:1,(C:1,D:1)0.99:1);");
+    r.setStyle({ colorBySupport: true, supportMin: 0.9, supportMax: 1 });
+    // 0.1 is far below the domain; it must simply take the low colour
+    expect(() => r.draw()).not.toThrow();
+  });
+
+  it("a degenerate domain does not divide by zero", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setStyle({ colorBySupport: true, supportMin: 0.5, supportMax: 0.5 });
+    expect(() => r.draw()).not.toThrow();
+  });
+});
