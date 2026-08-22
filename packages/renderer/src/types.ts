@@ -74,6 +74,20 @@ export interface StyleTokens {
   showLeafLabels: boolean;
   showSupport: boolean;
   colorBySupport: boolean;
+
+  /**
+   * Colour ramp for branch support, low to high.
+   *
+   * Three stops rather than two: support is not uniformly distributed — most
+   * branches in a large tree sit near the top of the range — so a two-colour
+   * ramp puts almost everything at one end and shows nothing. A midpoint lets
+   * the scale be pushed to where the interesting variation actually is.
+   */
+  supportRamp: { low: string; mid: string; high: string };
+  /** Where `mid` sits on the 0..1 support scale. */
+  supportMidpoint: number;
+  /** Colour for branches carrying no support value at all. */
+  supportAbsent: string;
 }
 
 export function defaultStyle(): StyleTokens {
@@ -93,6 +107,9 @@ export function defaultStyle(): StyleTokens {
     showLeafLabels: true,
     showSupport: false,
     colorBySupport: false,
+    supportRamp: { low: "#d73027", mid: "#fee08b", high: "#1a9850" },
+    supportMidpoint: 0.5,
+    supportAbsent: "#b0b6be",
   };
 }
 
