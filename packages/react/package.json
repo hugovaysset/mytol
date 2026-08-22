@@ -1,0 +1,27 @@
+{
+  "name": "@mytol/react",
+  "version": "0.2.0-dev",
+  "type": "module",
+  "description": "React binding for @mytol/renderer: <PhyloTree> plus tree-edit state and interaction logic.",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "src"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "@mytol/core": "*", "@mytol/renderer": "*" },
+  "peerDependencies": { "react": ">=18", "react-dom": ">=18" },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "vitest": "^2.1.0"
+  }
+}
