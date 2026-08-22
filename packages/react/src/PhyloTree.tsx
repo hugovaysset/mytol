@@ -55,6 +55,15 @@ export interface PhyloTreeProps {
   onViewChange?(next: ViewState): void;
   onHoverNode?(nodeId: number): void;
   onContextMenu?(req: ContextMenuRequest): void;
+  /**
+   * Whether to call preventDefault on the context-menu event.
+   *
+   * Leave it on for standalone use, so the browser menu does not appear over
+   * the tree. Turn it OFF when an external menu component wraps the tree:
+   * a menu library needs to act on the same event, and most bail out when it
+   * arrives already default-prevented.
+   */
+  suppressNativeContextMenu?: boolean;
   onDoubleClickNode?(nodeId: number): void;
   className?: string;
   cssStyle?: React.CSSProperties;
@@ -79,6 +88,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     onHoverNode,
     onContextMenu,
     onDoubleClickNode,
+    suppressNativeContextMenu = true,
     className,
     cssStyle,
   } = props;
@@ -290,7 +300,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      e.preventDefault();
+      if (suppressNativeContextMenu) e.preventDefault();
       const r = rendererRef.current;
       const t = treeRef.current;
       if (!r || !t) return;
@@ -302,7 +312,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       emitSelection({ ...selRef.current, pinned: hit });
       onContextMenu?.(req);
     },
-    [emitSelection, onContextMenu],
+    [emitSelection, onContextMenu, suppressNativeContextMenu],
   );
 
   const handleDoubleClick = useCallback(

@@ -443,3 +443,42 @@ describe("colour helpers", () => {
     expect(defaultStyle().lodMinPx).toBeGreaterThan(0);
   });
 });
+
+describe("branch picking", () => {
+  it("picks a branch clicked between its endpoints, not only at a vertex", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.draw();
+    const leaf = tree.leaves[0];
+    const parent = tree.parent[leaf];
+    const a = r.screenPosition(leaf)!;
+    const b = r.screenPosition(parent)!;
+    // midway along the horizontal run of the leaf's own branch
+    const midX = (a.x + b.x) / 2;
+    expect(r.pick(midX, a.y, 6)).toBe(leaf);
+  });
+
+  it("picks a clade by clicking its vertical connector", () => {
+    const { r, tree } = makeRenderer("((A:0.1,B:0.1):0.3,(C:0.1,D:0.1):0.3);");
+    r.draw();
+    const ab = tree.parent[tree.leaves[0]];
+    const p = r.screenPosition(ab)!;
+    const childA = r.screenPosition(tree.leaves[0])!;
+    // on the connector: parent's x, partway towards the child's row
+    const hit = r.pick(p.x, (p.y + childA.y) / 2, 6);
+    expect([ab, tree.leaves[0]]).toContain(hit);
+  });
+
+  it("still returns nothing well away from any branch", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.draw();
+    expect(r.pick(5, 5, 4)).toBe(-1);
+  });
+
+  it("picking a dense tree by branch stays O(depth)", () => {
+    const { r } = makeRenderer(balanced(50000));
+    r.draw();
+    const t0 = Date.now();
+    for (let k = 0; k < 400; k++) r.pick(200 + (k % 300), 100 + (k % 400), 14);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+});

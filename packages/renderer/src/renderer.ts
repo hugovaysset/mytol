@@ -41,6 +41,8 @@ import { getTrack, initTrack } from "./registry";
 
 const PADDING = 40;
 const LABEL_RESERVE_PX = 150;
+/** Rows shorter than this cannot carry a readable label, so none is drawn. */
+const LABEL_MIN_ROW_PX = 7;
 const CIRC_RADIUS_FRACTION = 0.45;
 const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
@@ -224,10 +226,17 @@ export class TreeRenderer {
     const W = this.width;
     const H = this.height;
     const trackWidth = this.effectiveTrackWidth();
-    const labelW = this.style.showLeafLabels ? LABEL_RESERVE_PX : 0;
+
+    // Vertical scale does not depend on the horizontal budget, so it can be
+    // settled first — which lets the label reserve be conditional rather than
+    // circular. Reserving 150px for labels that LOD then suppresses wastes a
+    // sixth of the panel and leaves a conspicuous gap before the tracks.
+    const sy = (H - 2 * PADDING) / Math.max(1, this.rect.height);
+    const labelsWillDraw = this.style.showLeafLabels && sy * this.view.vZoom >= LABEL_MIN_ROW_PX;
+    const labelW = labelsWillDraw ? LABEL_RESERVE_PX : 0;
+
     const usableW = Math.max(10, W - 2 * PADDING - trackWidth - labelW);
     const sx = usableW / Math.max(1e-9, this.rect.maxX);
-    const sy = (H - 2 * PADDING) / Math.max(1, this.rect.height);
 
     const originX = -W / 2 + PADDING;
     const originY = -H / 2 + PADDING;
@@ -502,10 +511,9 @@ export class TreeRenderer {
   }
 
   private drawLeafLabels(m: RectMetrics, rowH: number): void {
-    if (!this.style.showLeafLabels) return;
-    // Labels are only legible above ~7px of row height; below that they would
-    // be an unreadable smear that costs a measureText per leaf.
-    if (rowH < 7) return;
+    // Same threshold that decided whether to reserve room for labels, so the
+    // reserve and the drawing can never disagree.
+    if (!this.style.showLeafLabels || rowH < LABEL_MIN_ROW_PX) return;
     const t = this.tree as Tree;
     const ctx = this.ctx;
     const mask = this.highlight.mask;
@@ -643,25 +651,50 @@ export class TreeRenderer {
     const t = this.tree as Tree;
     const m = this.lastMetrics ?? this.metrics();
     if (!m) return -1;
-    const rowH = m.sy * this.view.vZoom;
-    if (rowH <= 0) return -1;
+    if (m.sy <= 0) return -1;
 
+    // The row under the cursor is arithmetic, so only that leaf's ancestors
+    // need testing — O(depth), not O(nodes).
     const est = Math.round(
       (sy - this.height / 2 - this.view.panY) / this.view.vZoom / m.sy - m.originY / m.sy,
     );
     const leafIdx = clampInt(est, 0, t.leaves.length - 1);
-    let node = t.leaves[leafIdx];
 
+    // Measure to the BRANCH, not to the node.
+    //
+    // A rectangular branch is an elbow: a vertical connector at the parent's x
+    // spanning parent.y to child.y, then a horizontal run at the child's y out
+    // to child.x. Testing only vertex positions means a click a few pixels
+    // along a branch misses everything, which at these row heights is most of
+    // the tree — you would have to hit a bifurcation exactly.
     let best = -1;
     let bestD = Infinity;
+    let node = t.leaves[leafIdx];
+
     while (node !== -1) {
-      const p = this.screenOf(m, node);
-      const d = Math.hypot(sx - p.x, sy - p.y);
-      if (d < bestD) {
+      const c = this.screenOf(m, node);
+      const parent = t.parent[node];
+
+      let d: number;
+      if (parent === -1) {
+        d = Math.hypot(sx - c.x, sy - c.y);
+      } else {
+        const p = this.screenOf(m, parent);
+        d = Math.min(
+          pointToSegment(sx, sy, p.x, p.y, p.x, c.y), // vertical connector
+          pointToSegment(sx, sy, p.x, c.y, c.x, c.y), // horizontal branch
+        );
+      }
+
+      // `<=` so ties go to the ancestor. A child's connector begins exactly at
+      // its parent's position, so clicking a bifurcation is a genuine tie; the
+      // larger clade is the more useful thing to hand back, and the walk runs
+      // child-to-root.
+      if (d <= bestD) {
         bestD = d;
         best = node;
       }
-      node = t.parent[node];
+      node = parent;
     }
     return bestD <= tol ? best : -1;
   }
@@ -840,6 +873,24 @@ export class TreeRenderer {
     this.recomputeLayouts();
     this.requestDraw();
   }
+}
+
+/** Distance from a point to a line segment. */
+function pointToSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
 function clampInt(v: number, lo: number, hi: number): number {
