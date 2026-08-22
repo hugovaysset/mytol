@@ -1,0 +1,27 @@
+{
+  "name": "@mytol/core",
+  "version": "0.2.0-dev",
+  "type": "module",
+  "description": "Headless phylogenetic tree core: parsing, model, layout, editing. Zero DOM, zero framework.",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
+  }
+}

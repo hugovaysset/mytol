@@ -1,25 +1,22 @@
 {
-  "name": "mytol",
-  "version": "0.1.0-beta",
+  "name": "mytol-workspace",
+  "version": "0.2.0-dev",
   "private": true,
   "type": "module",
+  "description": "myTOL — phylogenetic tree viewer. Headless core + canvas renderer + React binding + standalone app.",
+  "workspaces": [
+    "packages/core",
+    "packages/renderer",
+    "packages/react",
+    "packages/app"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "d3": "^7.9.0",
-    "react": "^18.2.0",
-    "react-colorful": "^5.6.1",
-    "react-dom": "^18.2.0"
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev": "npm run dev --workspace packages/app"
   },
   "devDependencies": {
-    "@types/d3": "^7.4.3",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "typescript": "^5.5.3",
-    "vite": "^5.4.0"
+    "typescript": "^5.9.0"
   }
 }
