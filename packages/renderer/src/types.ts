@@ -84,8 +84,18 @@ export interface StyleTokens {
    * the scale be pushed to where the interesting variation actually is.
    */
   supportRamp: { low: string; mid: string; high: string };
-  /** Where `mid` sits on the 0..1 support scale. */
+  /** Where `mid` sits within [supportMin, supportMax]. */
   supportMidpoint: number;
+  /**
+   * The range of support the ramp spans. Values outside it clamp to the ends.
+   *
+   * Support is rarely spread over the whole 0..1 interval — on a large tree
+   * most branches sit near the top — so a ramp fixed to 0..1 wastes most of its
+   * range on values that do not occur. Narrowing the domain to where the data
+   * actually is turns a flat picture into a readable one.
+   */
+  supportMin: number;
+  supportMax: number;
   /** Colour for branches carrying no support value at all. */
   supportAbsent: string;
 }
@@ -109,6 +119,8 @@ export function defaultStyle(): StyleTokens {
     colorBySupport: false,
     supportRamp: { low: "#d73027", mid: "#fee08b", high: "#1a9850" },
     supportMidpoint: 0.5,
+    supportMin: 0,
+    supportMax: 1,
     supportAbsent: "#b0b6be",
   };
 }

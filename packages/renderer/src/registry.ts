@@ -43,13 +43,25 @@ export const CAT_COLORS = [
   "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac",
 ];
 
+/**
+ * Assign a colour per category, deterministically.
+ *
+ * Categories are SORTED before assignment. Insertion order would otherwise
+ * decide the colours, and insertion order here is leaf order — so rerooting or
+ * rotating the tree silently repainted every annotation, which makes the
+ * colours useless for comparing one view against another.
+ *
+ * Sorting fixes the ordering but not the domain: if the set of categories
+ * changes (after a prune, say) the remaining ones still shift. Callers that
+ * need colours stable across edits should pass the full domain once, rather
+ * than letting it be inferred from whatever is currently on screen.
+ */
 export function autoPalette(categories: Iterable<string>, colors = PALETTE): Record<string, string> {
   const out: Record<string, string> = {};
-  let i = 0;
-  for (const c of new Set(categories)) {
+  const sorted = Array.from(new Set(categories)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  sorted.forEach((c, i) => {
     out[c] = colors[i % colors.length];
-    i++;
-  }
+  });
   return out;
 }
 

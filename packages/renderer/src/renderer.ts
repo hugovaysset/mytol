@@ -392,7 +392,10 @@ export class TreeRenderer {
       // Quantised lookup rather than building a colour string per branch: this
       // runs for every drawn branch of a 40 000-tip tree, twice over when a
       // filter is active.
-      const bucket = Math.round(Math.max(0, Math.min(1, v)) * (RAMP_STEPS - 1));
+      // Rescale into the configured domain before looking up.
+      const span = s.supportMax - s.supportMin;
+      const norm = span > 1e-9 ? (v - s.supportMin) / span : v >= s.supportMax ? 1 : 0;
+      const bucket = Math.round(Math.max(0, Math.min(1, norm)) * (RAMP_STEPS - 1));
       const table = excluded ? this.rampDim : this.rampFull;
       return table[bucket];
     }
@@ -672,11 +675,14 @@ export class TreeRenderer {
         if (row < 0 || row >= n) continue;
         const a = this.leafAngle(row, n);
         ctx.beginPath();
-        ctx.moveTo(R * 1.01 * Math.cos(a), R * 1.01 * Math.sin(a));
-        ctx.lineTo(R * 1.05 * Math.cos(a), R * 1.05 * Math.sin(a));
+        ctx.moveTo(R * 1.005 * Math.cos(a), R * 1.005 * Math.sin(a));
+        ctx.lineTo(R * 1.03 * Math.cos(a), R * 1.03 * Math.sin(a));
         ctx.stroke();
       }
     }
+
+    // -- annotation rings ------------------------------------------------------
+    const ringOuter = this.drawRings(ctx, R, n, halfStep, arcPerLeaf);
 
     // -- leaf labels around the rim -------------------------------------------
     // Fitting labels around a circle is the main reason to use this layout, so
@@ -695,7 +701,7 @@ export class TreeRenderer {
         const flip = Math.cos(a) < 0;
         ctx.save();
         ctx.rotate(a);
-        ctx.translate(R * 1.06, 0);
+        ctx.translate(ringOuter + 6 / zoom, 0);
         if (flip) {
           ctx.rotate(Math.PI);
           ctx.textAlign = "right";
@@ -710,6 +716,57 @@ export class TreeRenderer {
     }
 
     ctx.restore();
+  }
+
+  /**
+   * Annotation tracks as concentric rings.
+   *
+   * The registry's drawCell paints an axis-aligned rectangle, which is exactly
+   * right in the rectangular layout and meaningless here. Rather than ask every
+   * track type to know about polar coordinates, each leaf's cell is drawn into
+   * a rotated frame: the context is rotated to the leaf's angle and translated
+   * out to the ring, so drawCell still receives a plain (x, y, w, h) box and
+   * any track written for the linear view works unchanged in circular.
+   *
+   * Returns the outer radius reached, so labels know where to start.
+   */
+  private drawRings(
+    ctx: CanvasRenderingContext2D,
+    R: number,
+    n: number,
+    halfStep: number,
+    arcPerLeaf: number,
+  ): number {
+    let radius = R * 1.04;
+    if (!this.tracks.length) return radius;
+
+    // One cell per leaf is pointless when leaves are sub-pixel apart; step in
+    // proportion, exactly as the rectangular tracks do.
+    const step = Math.max(1, Math.round(this.style.lodMinPx / Math.max(arcPerLeaf, 1e-6)));
+    const cellAngle = halfStep * 2 * step;
+
+    for (const track of this.tracks) {
+      if (!track.visible) continue;
+      const def = getTrack(track.type);
+      if (!def) continue;
+      const width = track.width ?? def.width;
+      // Rings are thinner than linear tracks: they have the whole circumference
+      // to work with and depth is the scarce axis here.
+      const thickness = Math.min(width, 26);
+
+      for (let row = 0; row < n; row += step) {
+        const a = this.leafAngle(row, n);
+        ctx.save();
+        ctx.rotate(a);
+        // A cell tall enough to cover the angular slice it stands for.
+        const h = Math.max(1, cellAngle * radius);
+        ctx.translate(radius, -h / 2);
+        def.drawCell(ctx, 0, 0, thickness, h, row, track as never);
+        ctx.restore();
+      }
+      radius += thickness + 3;
+    }
+    return radius;
   }
 
   /** Fill the annular sector spanning leaf rows [rowA, rowB]. */
