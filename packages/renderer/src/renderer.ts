@@ -77,6 +77,8 @@ export class TreeRenderer {
   private collapsed = new Set<number>();
 
   private frame = 0;
+  private rampFull: string[] = [];
+  private rampDim: string[] = [];
   private width = 0;
   private height = 0;
   private lastMetrics: RectMetrics | null = null;
@@ -88,6 +90,7 @@ export class TreeRenderer {
     this.ctx = ctx;
     this.dpr = opts.dpr ?? (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
     this.style = { ...defaultStyle(), ...(opts.style ?? {}) };
+    this.buildRamp();
     this.view = {
       mode: "rect",
       phylogram: true,
@@ -123,7 +126,31 @@ export class TreeRenderer {
 
   setStyle(style: Partial<StyleTokens>): void {
     this.style = { ...this.style, ...style };
+    this.buildRamp();
     this.requestDraw();
+  }
+
+  /**
+   * Precompute the support ramp, once per style change.
+   *
+   * Two tables: the ramp itself, and the same ramp faded towards the dimmed
+   * colour for branches the current filter excludes. Fading rather than
+   * replacing keeps both readings legible when support colouring and a filter
+   * are on together — either one winning outright hides the other.
+   */
+  private buildRamp(): void {
+    const s = this.style;
+    const dim = hexToRgb(s.dimmed);
+    const full: string[] = new Array(RAMP_STEPS);
+    const faded: string[] = new Array(RAMP_STEPS);
+    for (let i = 0; i < RAMP_STEPS; i++) {
+      const v = i / (RAMP_STEPS - 1);
+      const rgb = supportRgb(v, s.supportRamp, s.supportMidpoint);
+      full[i] = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      faded[i] = mix(rgb, dim, 0.72);
+    }
+    this.rampFull = full;
+    this.rampDim = faded;
   }
 
   getStyle(): StyleTokens {
@@ -345,22 +372,32 @@ export class TreeRenderer {
   private branchColor(id: number): string {
     const t = this.tree as Tree;
     const s = this.style;
-    if (s.colorBySupport) {
-      const v = t.support[id];
-      if (!Number.isNaN(v)) return supportColor(v);
-    }
+
+    // A clade is excluded only when NO leaf under it passes the filter.
+    let excluded = false;
     const mask = this.highlight.mask;
     if (mask) {
-      // A clade is dimmed only when NO leaf under it passes the filter.
-      let any = false;
+      excluded = true;
       for (let i = t.L[id]; i < t.R[id]; i++) {
         if (mask[i]) {
-          any = true;
+          excluded = false;
           break;
         }
       }
-      if (!any) return s.dimmed;
     }
+
+    if (s.colorBySupport) {
+      const v = t.support[id];
+      if (Number.isNaN(v)) return excluded ? s.dimmed : s.supportAbsent;
+      // Quantised lookup rather than building a colour string per branch: this
+      // runs for every drawn branch of a 40 000-tip tree, twice over when a
+      // filter is active.
+      const bucket = Math.round(Math.max(0, Math.min(1, v)) * (RAMP_STEPS - 1));
+      const table = excluded ? this.rampDim : this.rampFull;
+      return table[bucket];
+    }
+
+    if (excluded) return s.dimmed;
     return s.branch;
   }
 
@@ -1044,8 +1081,62 @@ function clampInt(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-/** Red (low) to green (high) support ramp, matching garrigue. */
-export function supportColor(v: number): string {
+/** Parse #rgb or #rrggbb into channels. */
+export function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.trim().replace("#", "");
+  if (h.length === 3) {
+    return [
+      parseInt(h[0] + h[0], 16),
+      parseInt(h[1] + h[1], 16),
+      parseInt(h[2] + h[2], 16),
+    ];
+  }
+  const m = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(h);
+  if (!m) return [128, 128, 128];
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
+
+/** Blend two colours, `t` of the way from a to b. */
+function mix(a: [number, number, number], b: [number, number, number], t: number): string {
+  const u = t < 0 ? 0 : t > 1 ? 1 : t;
+  return `rgb(${Math.round(a[0] + (b[0] - a[0]) * u)},${Math.round(
+    a[1] + (b[1] - a[1]) * u,
+  )},${Math.round(a[2] + (b[2] - a[2]) * u)})`;
+}
+
+/** How finely the support ramp is quantised for the lookup table. */
+const RAMP_STEPS = 128;
+
+const DEFAULT_RAMP = { low: "#d73027", mid: "#fee08b", high: "#1a9850" };
+
+/** Channels for a support value on a three-stop ramp. */
+export function supportRgb(
+  v: number,
+  ramp: { low: string; mid: string; high: string } = DEFAULT_RAMP,
+  midpoint = 0.5,
+): [number, number, number] {
   const x = Math.max(0, Math.min(1, v));
-  return `rgb(${Math.round(220 * (1 - x))},${Math.round(160 * x + 40)},60)`;
+  const m = Math.max(0.001, Math.min(0.999, midpoint));
+  const lerp = (
+    a: [number, number, number],
+    b: [number, number, number],
+    t: number,
+  ): [number, number, number] => [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+  ];
+  return x <= m
+    ? lerp(hexToRgb(ramp.low), hexToRgb(ramp.mid), x / m)
+    : lerp(hexToRgb(ramp.mid), hexToRgb(ramp.high), (x - m) / (1 - m));
+}
+
+/** Colour for a support value on a three-stop ramp. */
+export function supportColor(
+  v: number,
+  ramp: { low: string; mid: string; high: string } = DEFAULT_RAMP,
+  midpoint = 0.5,
+): string {
+  const [r, g, b] = supportRgb(v, ramp, midpoint);
+  return `rgb(${r},${g},${b})`;
 }

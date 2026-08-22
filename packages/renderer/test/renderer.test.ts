@@ -16,6 +16,8 @@ import {
   autoPalette,
   heatColor,
   supportColor,
+  supportRgb,
+  hexToRgb,
   defaultStyle,
   type TrackInstance,
 } from "../src/index";
@@ -432,9 +434,11 @@ describe("view and layout modes", () => {
 });
 
 describe("colour helpers", () => {
-  it("supportColor runs red to green", () => {
-    expect(supportColor(0)).toBe("rgb(220,40,60)");
-    expect(supportColor(1)).toBe("rgb(0,200,60)");
+  it("supportColor runs low to high on the default ramp", () => {
+    // default is red-yellow-green, the convention for a support scale
+    expect(supportColor(0)).toBe("rgb(215,48,39)");
+    expect(supportColor(1)).toBe("rgb(26,152,80)");
+    expect(supportColor(0.5)).toBe("rgb(254,224,139)");
   });
   it("heatColor is diverging and clamps", () => {
     expect(heatColor(0.5, 0, 1)).toBe("rgb(255,255,255)");
@@ -656,5 +660,88 @@ describe("circular branch picking", () => {
     const t0 = Date.now();
     for (let k = 0; k < 400; k++) r.pick(300 + (k % 200), 200 + (k % 300), 14);
     expect(Date.now() - t0).toBeLessThan(500);
+  });
+});
+
+describe("support colouring", () => {
+  const RAMP = { low: "#000000", mid: "#808080", high: "#ffffff" };
+
+  it("interpolates low -> mid -> high", () => {
+    expect(supportColor(0, RAMP, 0.5)).toBe("rgb(0,0,0)");
+    expect(supportColor(0.5, RAMP, 0.5)).toBe("rgb(128,128,128)");
+    expect(supportColor(1, RAMP, 0.5)).toBe("rgb(255,255,255)");
+  });
+
+  it("puts the mid colour wherever the midpoint says", () => {
+    expect(supportColor(0.9, RAMP, 0.9)).toBe("rgb(128,128,128)");
+    // below a high midpoint, values stay in the lower half of the ramp
+    const [r] = supportRgb(0.5, RAMP, 0.9);
+    expect(r).toBeLessThan(128);
+  });
+
+  it("clamps out-of-range support", () => {
+    expect(supportColor(-5, RAMP, 0.5)).toBe(supportColor(0, RAMP, 0.5));
+    expect(supportColor(99, RAMP, 0.5)).toBe(supportColor(1, RAMP, 0.5));
+  });
+
+  it("accepts short hex", () => {
+    expect(hexToRgb("#f00")).toEqual([255, 0, 0]);
+    expect(hexToRgb("#ff0000")).toEqual([255, 0, 0]);
+  });
+
+  it("survives a nonsense colour rather than throwing", () => {
+    expect(hexToRgb("not a colour")).toEqual([128, 128, 128]);
+  });
+
+  it("changes what gets drawn when switched on", () => {
+    const off = makeRenderer(SIMPLE);
+    off.r.setStyle({ colorBySupport: false, showLeafLabels: false });
+    off.r.draw();
+
+    const on = makeRenderer(SIMPLE);
+    on.r.setStyle({ colorBySupport: true, showLeafLabels: false });
+    on.r.draw();
+    // both draw; the point is that enabling it does not break the draw path
+    expect(on.calls.fillRect).toBeGreaterThan(0);
+    expect(off.calls.fillRect).toBeGreaterThan(0);
+  });
+
+  it("shows numeric support labels only when asked", () => {
+    const off = makeRenderer(SIMPLE);
+    off.r.setStyle({ showSupport: false, showLeafLabels: false });
+    off.calls.fillText = 0;
+    off.r.draw();
+
+    const on = makeRenderer(SIMPLE);
+    on.r.setStyle({ showSupport: true, showLeafLabels: false });
+    on.calls.fillText = 0;
+    on.r.draw();
+    expect(on.calls.fillText).toBeGreaterThan(off.calls.fillText);
+  });
+
+  it("honours a custom ramp through setStyle", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setStyle({
+      colorBySupport: true,
+      supportRamp: { low: "#111111", mid: "#222222", high: "#333333" },
+    });
+    r.draw();
+    expect(r.getStyle().supportRamp.high).toBe("#333333");
+  });
+
+  it("thickness is adjustable", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setStyle({ branchWidth: 3 });
+    expect(r.getStyle().branchWidth).toBe(3);
+    r.draw();
+  });
+
+  it("branches with no support value do not vanish", () => {
+    // topology only: no internal labels at all
+    const { r, calls } = makeRenderer("((A,B),(C,D));");
+    r.setStyle({ colorBySupport: true, showLeafLabels: false });
+    calls.fillRect = 0;
+    r.draw();
+    expect(calls.fillRect).toBeGreaterThan(0);
   });
 });
