@@ -1,0 +1,20 @@
+{
+  "name": "@mytol/renderer",
+  "version": "0.2.0-dev",
+  "type": "module",
+  "description": "Canvas renderer for @mytol/core. Framework-agnostic, rAF-batched, with a pluggable track registry.",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "src"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "@mytol/core": "*" },
+  "devDependencies": { "vitest": "^2.1.0" }
+}
