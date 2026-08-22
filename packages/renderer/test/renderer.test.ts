@@ -25,11 +25,12 @@ interface Calls {
   fillText: number;
   stroke: number;
   arc: number;
+  fill: number;
   ops: string[];
 }
 
 function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls } {
-  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, ops: [] };
+  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [] };
   const ctx: Record<string, unknown> = {
     fillStyle: "",
     strokeStyle: "",
@@ -59,11 +60,17 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
     ellipse: () => {},
     rect: () => {},
     clip: () => {},
-    fill: () => {},
+    // fill() is how filled paths are drawn — the circular highlight wedges use
+    // it rather than fillRect, so it has to count as an operation.
+    fill: () => {
+      calls.fill++;
+      calls.ops.push("fill");
+    },
     save: () => {},
     restore: () => {},
     translate: () => {},
     scale: () => {},
+    rotate: () => {},
     setTransform: () => {},
     measureText: (s: string) => ({ width: s.length * 6 }),
   };
@@ -479,6 +486,175 @@ describe("branch picking", () => {
     r.draw();
     const t0 = Date.now();
     for (let k = 0; k < 400; k++) r.pick(200 + (k % 300), 100 + (k % 400), 14);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+});
+
+describe("circular layout", () => {
+  /**
+   * Count the ops of ONE frame.
+   *
+   * The counters accumulate, and resize()/setView()/setHighlight() each trigger
+   * a draw of their own (there is no rAF in node, so requestDraw paints
+   * immediately). Measuring without zeroing first compares a running total
+   * against a single frame.
+   */
+  function frameOps(r: TreeRenderer, calls: Calls): number {
+    calls.ops.length = 0;
+    r.draw();
+    return calls.ops.length;
+  }
+
+  it("draws a highlight wedge for the pinned clade", () => {
+    const plain = makeRenderer(SIMPLE);
+    plain.r.setView({ mode: "circular" });
+    plain.r.setStyle({ showLeafLabels: false });
+    const before = frameOps(plain.r, plain.calls);
+
+    const pinned = makeRenderer(SIMPLE);
+    pinned.r.setView({ mode: "circular" });
+    pinned.r.setStyle({ showLeafLabels: false });
+    pinned.r.setHighlight({ pinned: pinned.tree.root });
+    expect(frameOps(pinned.r, pinned.calls)).toBeGreaterThan(before);
+  });
+
+  it("draws selection ticks around the rim", () => {
+    const plain = makeRenderer(SIMPLE);
+    plain.r.setView({ mode: "circular" });
+    plain.r.setStyle({ showLeafLabels: false });
+    plain.calls.stroke = 0;
+    plain.r.draw();
+    const before = plain.calls.stroke;
+
+    const sel = makeRenderer(SIMPLE);
+    sel.r.setView({ mode: "circular" });
+    sel.r.setStyle({ showLeafLabels: false });
+    sel.r.setHighlight({ selection: new Set([0, 1, 2, 3]) });
+    sel.calls.stroke = 0;
+    sel.r.draw();
+    expect(sel.calls.stroke).toBeGreaterThan(before);
+  });
+
+  it("labels the rim when the tips are far enough apart", () => {
+    const { r, calls } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: true });
+    calls.fillText = 0;
+    r.draw();
+    expect(calls.fillText).toBeGreaterThanOrEqual(4);
+  });
+
+  it("drops rim labels when the tips crowd together", () => {
+    const { r, calls } = makeRenderer(balanced(8192));
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: true });
+    calls.fillText = 0;
+    r.draw();
+    expect(calls.fillText).toBe(0);
+  });
+
+  it("picks a node in circular mode at its own position", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.draw();
+    for (const leaf of tree.leaves) {
+      const p = r.screenPosition(leaf)!;
+      expect(r.pick(p.x, p.y, 10)).toBe(leaf);
+    }
+  });
+
+  it("rotation moves the tips without changing the tree", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular", rotation: 0 });
+    r.draw();
+    const before = r.screenPosition(tree.leaves[0])!;
+    r.setView({ rotation: 90 });
+    r.draw();
+    const after = r.screenPosition(tree.leaves[0])!;
+    expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeGreaterThan(1);
+    expect(tree.leaves.length).toBe(4);
+  });
+
+  it("a narrower arc packs the tips closer together", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular", arc: 360, rotation: 0 });
+    r.draw();
+    const a0 = r.screenPosition(tree.leaves[0])!;
+    const a1 = r.screenPosition(tree.leaves[1])!;
+    const wideStep = Math.hypot(a1.x - a0.x, a1.y - a0.y);
+
+    // Adjacent tips, not first-to-last: across a full circle the outermost
+    // pair wraps back around and the chord between them says nothing.
+    r.setView({ arc: 120 });
+    r.draw();
+    const b0 = r.screenPosition(tree.leaves[0])!;
+    const b1 = r.screenPosition(tree.leaves[1])!;
+    expect(Math.hypot(b1.x - b0.x, b1.y - b0.y)).toBeLessThan(wideStep);
+  });
+
+  it("still culls by level of detail on a large circular tree", () => {
+    const small = makeRenderer(balanced(4096));
+    small.r.setView({ mode: "circular" });
+    small.r.setStyle({ showLeafLabels: false });
+    small.calls.stroke = 0;
+    small.r.draw();
+
+    const big = makeRenderer(balanced(32768));
+    big.r.setView({ mode: "circular" });
+    big.r.setStyle({ showLeafLabels: false });
+    big.calls.stroke = 0;
+    big.r.draw();
+
+    expect(big.calls.stroke).toBeLessThan(small.calls.stroke * 3);
+  });
+});
+
+describe("circular branch picking", () => {
+  it("picks a branch clicked along its radial run", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.draw();
+    const leaf = tree.leaves[0];
+    const parent = tree.parent[leaf];
+    const a = r.screenPosition(leaf)!;
+    const b = r.screenPosition(parent)!;
+    // partway between the two, which is on the branch but at no vertex
+    expect(r.pick((a.x + b.x) / 2, (a.y + b.y) / 2, 14)).toBeGreaterThanOrEqual(0);
+  });
+
+  it("picks a clade from a point on its connecting arc", () => {
+    const { r, tree } = makeRenderer("((A:0.1,B:0.1):0.3,(C:0.1,D:0.1):0.3);");
+    r.setView({ mode: "circular" });
+    r.draw();
+    const ab = tree.parent[tree.leaves[0]];
+    const p = r.screenPosition(ab)!;
+    const hit = r.pick(p.x, p.y, 12);
+    expect(hit).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns nothing far outside the tree", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.draw();
+    expect(r.pick(5, 5, 4)).toBe(-1);
+  });
+
+  it("keeps working after the tree is rotated", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular", rotation: 137 });
+    r.draw();
+    for (const leaf of tree.leaves) {
+      const p = r.screenPosition(leaf)!;
+      expect(r.pick(p.x, p.y, 10)).toBe(leaf);
+    }
+  });
+
+  it("stays fast on a large circular tree", () => {
+    const { r } = makeRenderer(balanced(40000));
+    r.setView({ mode: "circular" });
+    r.draw();
+    const t0 = Date.now();
+    for (let k = 0; k < 400; k++) r.pick(300 + (k % 200), 200 + (k % 300), 14);
     expect(Date.now() - t0).toBeLessThan(500);
   });
 });

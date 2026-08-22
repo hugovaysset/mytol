@@ -552,10 +552,18 @@ export class TreeRenderer {
 
   // -- radial modes ----------------------------------------------------------
 
+  /** Angle of a leaf row in the circular layout, in radians. */
+  private leafAngle(row: number, n: number): number {
+    const start = (this.view.rotation * Math.PI) / 180;
+    const span = (this.view.arc * Math.PI) / 180;
+    return start - ((row + 0.5) / Math.max(1, n)) * span;
+  }
+
   private drawCircular(skip: Uint8Array): void {
     const t = this.tree as Tree;
     const lo = this.rect as RectLayout;
     const ctx = this.ctx;
+    const s = this.style;
     const W = this.width;
     const H = this.height;
     const R = Math.min(W, H) * CIRC_RADIUS_FRACTION;
@@ -570,12 +578,34 @@ export class TreeRenderer {
       rectToPolar(lo.maxX > 0 ? lo.x[id] / lo.maxX : 0, lo.y[id], n, R, rotation, arc);
 
     const arcPerLeaf = ((arc * Math.PI) / 180 / n) * R * zoom;
-    const lw = this.style.branchWidth / zoom;
+    const halfStep = (arc * Math.PI) / 180 / n / 2;
+    const lw = s.branchWidth / zoom;
 
+    // -- coloured ranges, as full-depth sectors --------------------------------
+    if (this.rangeMode === "background") {
+      for (const r of this.ranges) {
+        const id = nodeByUid(t, r.nodeUid);
+        if (id === -1) continue;
+        this.fillWedge(ctx, pt(id).radius, R, t.L[id], t.R[id] - 1, n, halfStep, r.color + "55");
+      }
+    }
+
+    // -- hovered and pinned clades --------------------------------------------
+    for (const [nodeId, fill] of [
+      [this.highlight.pinned, s.pinned] as const,
+      [this.highlight.hover, s.hover] as const,
+    ]) {
+      if (nodeId < 0 || nodeId >= t.count) continue;
+      // Starts at the clade's own radius and runs outward, so the highlight
+      // marks the clade rather than a pie slice through the whole tree.
+      this.fillWedge(ctx, pt(nodeId).radius, R * 1.02, t.L[nodeId], t.R[nodeId] - 1, n, halfStep, fill);
+    }
+
+    // -- branches --------------------------------------------------------------
     for (let id = 0; id < t.count; id++) {
       if (skip[id] === 2) continue;
-      if (id !== t.root && skip[id] === 0 && this.style.lodMinPx > 0) {
-        if ((t.R[id] - t.L[id]) * arcPerLeaf < this.style.lodMinPx) continue;
+      if (id !== t.root && skip[id] === 0 && s.lodMinPx > 0) {
+        if ((t.R[id] - t.L[id]) * arcPerLeaf < s.lodMinPx) continue;
       }
       const p = pt(id);
       ctx.strokeStyle = this.branchColor(id);
@@ -584,18 +614,88 @@ export class TreeRenderer {
       for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
         if (skip[c] === 2) continue;
         const q = pt(c);
-        // radial segment
+        // radial segment out to the child
         ctx.beginPath();
         ctx.moveTo(p.radius * Math.cos(q.angle), p.radius * Math.sin(q.angle));
         ctx.lineTo(q.x, q.y);
         ctx.stroke();
-        // arc segment joining parent to child angle
+        // arc joining the parent's angle to the child's
         ctx.beginPath();
         ctx.arc(0, 0, p.radius, Math.min(p.angle, q.angle), Math.max(p.angle, q.angle));
         ctx.stroke();
       }
     }
+
+    // -- selected leaves, as ticks just outside the tips -----------------------
+    const sel = this.highlight.selection;
+    if (sel && sel.size) {
+      ctx.strokeStyle = s.selected;
+      ctx.lineWidth = Math.max(lw, halfStep * R * 1.4);
+      for (const row of sel) {
+        if (row < 0 || row >= n) continue;
+        const a = this.leafAngle(row, n);
+        ctx.beginPath();
+        ctx.moveTo(R * 1.01 * Math.cos(a), R * 1.01 * Math.sin(a));
+        ctx.lineTo(R * 1.05 * Math.cos(a), R * 1.05 * Math.sin(a));
+        ctx.stroke();
+      }
+    }
+
+    // -- leaf labels around the rim -------------------------------------------
+    // Fitting labels around a circle is the main reason to use this layout, so
+    // they are drawn whenever the angular spacing leaves room for them.
+    const arcPx = arcPerLeaf;
+    if (s.showLeafLabels && arcPx >= 6) {
+      const mask = this.highlight.mask;
+      const fontPx = Math.min(12, Math.max(6, arcPx - 1)) / zoom;
+      ctx.font = `${fontPx}px ${s.fontFamily}`;
+      ctx.textBaseline = "middle";
+      for (let row = 0; row < n; row++) {
+        const id = t.leaves[row];
+        const name = t.name[id];
+        if (!name) continue;
+        const a = this.leafAngle(row, n);
+        const flip = Math.cos(a) < 0;
+        ctx.save();
+        ctx.rotate(a);
+        ctx.translate(R * 1.06, 0);
+        if (flip) {
+          ctx.rotate(Math.PI);
+          ctx.textAlign = "right";
+        } else {
+          ctx.textAlign = "left";
+        }
+        ctx.fillStyle = mask && !mask[row] ? s.dimmed : s.text;
+        ctx.fillText(name, 0, 0);
+        ctx.restore();
+      }
+      ctx.textAlign = "left";
+    }
+
     ctx.restore();
+  }
+
+  /** Fill the annular sector spanning leaf rows [rowA, rowB]. */
+  private fillWedge(
+    ctx: CanvasRenderingContext2D,
+    rInner: number,
+    rOuter: number,
+    rowA: number,
+    rowB: number,
+    n: number,
+    halfStep: number,
+    fill: string,
+  ): void {
+    const a0 = this.leafAngle(rowA, n) + halfStep;
+    const a1 = this.leafAngle(rowB, n) - halfStep;
+    const lo = Math.min(a0, a1);
+    const hi = Math.max(a0, a1);
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0, rInner), lo, hi);
+    ctx.arc(0, 0, rOuter, hi, lo, true);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
   }
 
   private drawUnrooted(skip: Uint8Array): void {
@@ -711,7 +811,8 @@ export class TreeRenderer {
     const wx = (sx - W / 2 - panX) / zoom;
     const wy = (sy - H / 2 - panY) / zoom;
 
-    let angle = Math.atan2(wy, wx);
+    // Which leaf row the cursor's angle falls on — O(1), as in rect mode.
+    const angle = Math.atan2(wy, wx);
     const start = (rotation * Math.PI) / 180;
     const span = (arc * Math.PI) / 180;
     let frac = (start - angle) / span;
@@ -719,17 +820,41 @@ export class TreeRenderer {
     while (frac > 1) frac -= 1;
     const leafIdx = clampInt(Math.round(frac * n - 0.5), 0, n - 1);
 
-    let node = t.leaves[leafIdx];
+    const pt = (id: number) =>
+      rectToPolar(lo.maxX > 0 ? lo.x[id] / lo.maxX : 0, lo.y[id], n, R, rotation, arc);
+
+    // Measure to the BRANCH. A circular branch is a radial run at the child's
+    // angle plus an arc at the parent's radius; testing only vertex positions
+    // means a click anywhere along a branch misses, which on a large tree is
+    // almost every click.
     let best = -1;
     let bestD = Infinity;
+    let node = t.leaves[leafIdx];
+
     while (node !== -1) {
-      const p = rectToPolar(lo.maxX > 0 ? lo.x[node] / lo.maxX : 0, lo.y[node], n, R, rotation, arc);
-      const d = Math.hypot(wx - p.x, wy - p.y);
-      if (d < bestD) {
+      const c = pt(node);
+      const parent = t.parent[node];
+
+      let d: number;
+      if (parent === -1) {
+        d = Math.hypot(wx - c.x, wy - c.y);
+      } else {
+        const p = pt(parent);
+        const radialFromX = p.radius * Math.cos(c.angle);
+        const radialFromY = p.radius * Math.sin(c.angle);
+        d = Math.min(
+          pointToSegment(wx, wy, radialFromX, radialFromY, c.x, c.y),
+          pointToArc(wx, wy, p.radius, p.angle, c.angle),
+        );
+      }
+
+      // Ties go to the ancestor, as in rect mode: a child's arc begins at its
+      // parent's position, so a bifurcation is a genuine tie.
+      if (d <= bestD) {
         bestD = d;
         best = node;
       }
-      node = t.parent[node];
+      node = parent;
     }
     return bestD <= tol / zoom ? best : -1;
   }
@@ -873,6 +998,28 @@ export class TreeRenderer {
     this.recomputeLayouts();
     this.requestDraw();
   }
+}
+
+/** Distance from a point to a circular arc centred on the origin. */
+function pointToArc(
+  px: number,
+  py: number,
+  radius: number,
+  a0: number,
+  a1: number,
+): number {
+  const r = Math.hypot(px, py);
+  const lo = Math.min(a0, a1);
+  const hi = Math.max(a0, a1);
+  let a = Math.atan2(py, px);
+  // bring the angle into the same turn as the arc before comparing
+  while (a < lo - Math.PI) a += 2 * Math.PI;
+  while (a > lo + Math.PI) a -= 2 * Math.PI;
+  if (a >= lo && a <= hi) return Math.abs(r - radius);
+  return Math.min(
+    Math.hypot(px - radius * Math.cos(lo), py - radius * Math.sin(lo)),
+    Math.hypot(px - radius * Math.cos(hi), py - radius * Math.sin(hi)),
+  );
 }
 
 /** Distance from a point to a line segment. */
