@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/PhyloViewer.tsx","./src/lib/colorUtils.ts","./src/lib/constants.ts","./src/lib/parseAnnotations.ts","./src/lib/treeLayout.ts","./src/lib/treeUtils.ts","./src/lib/types.ts"],"version":"5.9.3"}
