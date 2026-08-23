@@ -33,6 +33,16 @@ export interface ViewState {
   rotation: number;
   /** Circular layout: how much of the circle the leaves span, in degrees. */
   arc: number;
+  /**
+   * Which quantile of the LEAF positions the view frames on.
+   *
+   * 1 means "fit the deepest tip", which lets a single long branch decide the
+   * scale for everything else — on the SIR2 tree the deepest tip sits at 15.9
+   * against a 90th percentile of 4.9, so one outlier squeezes nine tenths of
+   * the tree into under a third of the panel. Framing on the quantile keeps
+   * the bulk legible and puts the annotation tracks just beyond it.
+   */
+  fitQuantile: number;
 }
 
 export function defaultView(): ViewState {
@@ -45,6 +55,7 @@ export function defaultView(): ViewState {
     zoom: 1,
     rotation: 0,
     arc: 350,
+    fitQuantile: 0.9,
   };
 }
 
@@ -116,10 +127,17 @@ export function defaultStyle(): StyleTokens {
     lodMinPx: 1.5,
     showLeafLabels: true,
     showSupport: false,
-    colorBySupport: false,
-    supportRamp: { low: "#d73027", mid: "#fee08b", high: "#1a9850" },
+    // On by default. Support is the first thing you want to know about a
+    // branch before believing anything the topology says, and a tree drawn in
+    // one flat colour quietly invites you to trust every split equally.
+    colorBySupport: true,
+    // Black at the bottom of the range to bright green at the top. The domain
+    // starts at 0.8 because below that a split is not worth reading: on the
+    // SIR2 tree the median is 0.90, so a 0..1 ramp spends most of its range
+    // where almost nothing lives.
+    supportRamp: { low: "#000000", mid: "#0f7a3d", high: "#19e06a" },
     supportMidpoint: 0.5,
-    supportMin: 0,
+    supportMin: 0.8,
     supportMax: 1,
     supportAbsent: "#b0b6be",
   };

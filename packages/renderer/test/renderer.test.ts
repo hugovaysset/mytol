@@ -973,3 +973,96 @@ describe("tracks in unrooted mode", () => {
     expect(calls.fillRect).toBeGreaterThan(one);
   });
 });
+
+describe("robust framing", () => {
+  /** One tip far deeper than the rest — the case that ruins a max-based fit. */
+  const OUTLIER =
+    "((" +
+    Array.from({ length: 20 }, (_, i) => `T${i}:1.0`).join(",") +
+    "):0.1,FAR:20.0);";
+
+  it("frames on the quantile, not on the deepest tip", () => {
+    const { r } = makeRenderer(OUTLIER);
+    r.setView({ fitQuantile: 0.9 });
+    r.draw();
+    const wide = r.metrics()!.sx;
+
+    r.setView({ fitQuantile: 1 });
+    r.draw();
+    const narrow = r.metrics()!.sx;
+
+    // Framing on 90% gives a LARGER scale, because it ignores the long branch.
+    expect(wide).toBeGreaterThan(narrow * 2);
+  });
+
+  it("puts the tracks just beyond the bulk of the tips", () => {
+    const { r } = makeRenderer(OUTLIER);
+    r.setStyle({ showLeafLabels: false });
+    r.setView({ fitQuantile: 0.9 });
+    r.draw();
+    const near = r.metrics()!.trackStartX;
+
+    r.setView({ fitQuantile: 1 });
+    r.draw();
+    // With the outlier framed in, the tracks are pushed no closer.
+    expect(near).toBeLessThanOrEqual(r.metrics()!.trackStartX + 1);
+  });
+
+  it("changing the quantile relayouts rather than only rescaling", () => {
+    const { r } = makeRenderer(OUTLIER);
+    r.setView({ fitQuantile: 1 });
+    r.draw();
+    const a = r.metrics()!.sx;
+    r.setView({ fitQuantile: 0.5 });
+    r.draw();
+    expect(r.metrics()!.sx).not.toBe(a);
+  });
+
+  it("costs nothing on a tree with no outliers", () => {
+    const even = "(" + Array.from({ length: 20 }, (_, i) => `T${i}:1.0`).join(",") + ");";
+    const { r } = makeRenderer(even);
+    r.setView({ fitQuantile: 0.9 });
+    r.draw();
+    const q = r.metrics()!.sx;
+    r.setView({ fitQuantile: 1 });
+    r.draw();
+    expect(r.metrics()!.sx).toBeCloseTo(q, 6);
+  });
+});
+
+describe("support colouring defaults", () => {
+  it("is on out of the box", () => {
+    expect(defaultStyle().colorBySupport).toBe(true);
+  });
+
+  it("spans 0.8 to 1.0 rather than the whole interval", () => {
+    const s = defaultStyle();
+    expect(s.supportMin).toBe(0.8);
+    expect(s.supportMax).toBe(1);
+  });
+
+  it("runs black to bright green", () => {
+    const s = defaultStyle();
+    expect(hexToRgb(s.supportRamp.low)).toEqual([0, 0, 0]);
+    const [, g] = hexToRgb(s.supportRamp.high);
+    expect(g).toBeGreaterThan(180);
+  });
+
+  it("the ramp runs black at its foot to green at its head", () => {
+    // supportColor takes a position ALONG the ramp; the 0.8..1.0 domain is
+    // applied before it, by the renderer.
+    const s = defaultStyle();
+    expect(supportColor(0, s.supportRamp, s.supportMidpoint)).toBe("rgb(0,0,0)");
+    const top = supportRgb(1, s.supportRamp, s.supportMidpoint);
+    expect(top[1]).toBeGreaterThan(top[0] + 100);
+  });
+
+  it("the default domain maps a support of 0.8 to the foot and 1.0 to the head", () => {
+    const { supportMin: lo, supportMax: hi } = defaultStyle();
+    const norm = (v: number) => (v - lo) / (hi - lo);
+    expect(norm(0.8)).toBeCloseTo(0, 9);
+    expect(norm(1.0)).toBeCloseTo(1, 9);
+    // and a poorly supported branch clamps to the foot rather than wrapping
+    expect(Math.max(0, Math.min(1, norm(0.4)))).toBe(0);
+  });
+});

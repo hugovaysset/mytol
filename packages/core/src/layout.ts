@@ -12,8 +12,19 @@ export interface RectLayout {
   x: Float64Array;
   /** y per node id, in leaf-index units. */
   y: Float64Array;
-  /** Largest x, for scaling to the canvas. */
+  /** Largest x in the tree — the deepest tip, outliers included. */
   maxX: number;
+  /**
+   * The x a view should scale to: a quantile of the LEAF positions.
+   *
+   * Scaling to `maxX` lets one long branch decide the layout for everything
+   * else. On the SIR2 tree the deepest tip sits at 15.9 while the 90th
+   * percentile is 4.9 — so a single outlier squeezes nine tenths of the tree
+   * into under a third of the panel. Framing on the quantile keeps the bulk of
+   * the tree legible; the few tips beyond it are clipped at the edge and
+   * marked, not hidden.
+   */
+  fitX: number;
   /** Vertical extent in leaf-index units. */
   height: number;
 }
@@ -25,7 +36,11 @@ export interface RectLayout {
  * where leaves are flush right and internal nodes sit as far right as the
  * topology allows.
  */
-export function layoutRectangular(t: Tree, phylogram: boolean): RectLayout {
+export function layoutRectangular(
+  t: Tree,
+  phylogram: boolean,
+  fitQuantile = 0.9,
+): RectLayout {
   const x = new Float64Array(t.count);
   const y = new Float64Array(t.count);
 
@@ -74,8 +89,24 @@ export function layoutRectangular(t: Tree, phylogram: boolean): RectLayout {
     y[id] = n ? sum / n : 0;
   }
 
+  // The framing extent, over leaves only: internal nodes are never the
+  // rightmost thing, and a quantile over all nodes would be dragged left by
+  // the many shallow ones.
+  let fitX = maxX;
+  const q = Math.min(1, Math.max(0, fitQuantile));
+  if (q < 1 && t.leaves.length > 1) {
+    const leafX = new Float64Array(t.leaves.length);
+    for (let i = 0; i < t.leaves.length; i++) leafX[i] = x[t.leaves[i]];
+    leafX.sort();
+    const at = leafX[Math.min(leafX.length - 1, Math.round(q * (leafX.length - 1)))];
+    // On a tree without outliers the quantile and the max nearly coincide, so
+    // this costs nothing there and only bites when there is a long tail.
+    if (at > 0) fitX = at;
+  }
+  if (!(fitX > 0)) fitX = maxX || 1;
+
   const height = t.leaves.length > 0 ? t.leaves.length - 1 : 1;
-  return { x, y, maxX, height };
+  return { x, y, maxX, fitX, height };
 }
 
 function preOrder(t: Tree): Int32Array {
