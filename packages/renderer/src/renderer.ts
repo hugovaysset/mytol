@@ -34,6 +34,7 @@ import {
   type RangeInstance,
   type RangeDisplayMode,
   type RendererOptions,
+  type LayoutMode,
   defaultStyle,
   emptyHighlight,
 } from "./types";
@@ -79,6 +80,21 @@ export class TreeRenderer {
   private frame = 0;
   private rampFull: string[] = [];
   private rampDim: string[] = [];
+  /**
+   * Where each track column ended up, in screen space.
+   *
+   * Recorded during the draw rather than recomputed on hover: the geometry
+   * already exists at that moment, and a track's position depends on the
+   * layout mode, the LOD stride and every earlier track's width.
+   */
+  private trackHits: Array<{
+    track: TrackInstance;
+    mode: LayoutMode;
+    x0: number;
+    x1: number;
+    r0?: number;
+    r1?: number;
+  }> = [];
   private width = 0;
   private height = 0;
   private lastMetrics: RectMetrics | null = null;
@@ -330,6 +346,8 @@ export class TreeRenderer {
       return;
     }
 
+    this.trackHits = [];
+
     // skipNode: 0 draw, 1 collapsed triangle, 2 hidden inside a collapse
     const skip = this.computeSkip();
 
@@ -546,6 +564,7 @@ export class TreeRenderer {
         const y = this.rowY(m, i) - rowH / 2;
         def.drawCell(ctx, colX, y, w, Math.max(1, rowH * step), i, track as never);
       }
+      this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
       colX += w + TRACK_GAP;
     }
   }
@@ -764,6 +783,14 @@ export class TreeRenderer {
         def.drawCell(ctx, 0, 0, thickness, h, row, track as never);
         ctx.restore();
       }
+      this.trackHits.push({
+        track,
+        mode: "circular",
+        x0: 0,
+        x1: 0,
+        r0: radius,
+        r1: radius + thickness,
+      });
       radius += thickness + 3;
     }
     return radius;
@@ -821,6 +848,45 @@ export class TreeRenderer {
         ctx.stroke();
       }
     }
+
+    // Annotation tracks, as markers on the tips themselves.
+    //
+    // There is no rim to hang rings from here: an unrooted layout scatters its
+    // tips at every radius and angle, so a concentric ring would have nothing
+    // to do with which tip it passed. Marking each tip in place keeps the
+    // annotation attached to the thing it describes, which is the only reading
+    // that survives this layout.
+    if (this.tracks.length) {
+      const size = Math.max(2, 4 / zoom);
+      let ring = 0;
+      for (const track of this.tracks) {
+        if (!track.visible) continue;
+        const def = getTrack(track.type);
+        if (!def) continue;
+        const off = ring * (size + 1.5);
+        for (let i = 0; i < t.leaves.length; i++) {
+          const id = t.leaves[i];
+          if (skip[id] === 2) continue;
+          const x = lo.x[id] * R;
+          const y = lo.y[id] * R;
+          const n = Math.hypot(x, y) || 1;
+          // Push each successive track a little further out along the tip's
+          // own direction from the centre, so several can coexist.
+          def.drawCell(
+            ctx,
+            x + (x / n) * off - size / 2,
+            y + (y / n) * off - size / 2,
+            size,
+            size,
+            i,
+            track as never,
+          );
+        }
+        this.trackHits.push({ track, mode: "unrooted", x0: 0, x1: 0 });
+        ring++;
+      }
+    }
+
     ctx.restore();
   }
 
@@ -1062,6 +1128,81 @@ export class TreeRenderer {
       x: this.width / 2 + this.view.panX + lo.x[id] * R * this.view.zoom,
       y: this.height / 2 + this.view.panY + lo.y[id] * R * this.view.zoom,
     };
+  }
+
+  /**
+   * What lies under the cursor in an annotation track, if anything.
+   *
+   * Returns the track and the leaf row it belongs to, so a host can say both
+   * which protein and which annotation the pointer is over. Tracks sit outside
+   * the tree, so a plain node pick never reaches them and the two hit tests
+   * have to be separate.
+   */
+  trackAt(sx: number, sy: number): { track: TrackInstance; leafIndex: number } | null {
+    const t = this.tree;
+    if (!t || !this.trackHits.length) return null;
+
+    if (this.view.mode === "rect") {
+      const leafIndex = this.leafIndexAt(sy);
+      if (leafIndex < 0) return null;
+      for (const hit of this.trackHits) {
+        if (hit.mode !== "rect") continue;
+        if (sx >= hit.x0 && sx <= hit.x1) return { track: hit.track, leafIndex };
+      }
+      return null;
+    }
+
+    if (this.view.mode === "circular") {
+      const { zoom, panX, panY } = this.view;
+      const wx = (sx - this.width / 2 - panX) / zoom;
+      const wy = (sy - this.height / 2 - panY) / zoom;
+      const r = Math.hypot(wx, wy);
+      const n = t.leaves.length || 1;
+
+      for (const hit of this.trackHits) {
+        if (hit.mode !== "circular" || hit.r0 === undefined || hit.r1 === undefined) continue;
+        if (r < hit.r0 || r > hit.r1) continue;
+        const angle = Math.atan2(wy, wx);
+        const start = (this.view.rotation * Math.PI) / 180;
+        const span = (this.view.arc * Math.PI) / 180;
+        let frac = (start - angle) / span;
+        while (frac < 0) frac += 1;
+        while (frac > 1) frac -= 1;
+        const row = Math.round(frac * n - 0.5);
+        if (row < 0 || row >= n) return null;
+        return { track: hit.track, leafIndex: row };
+      }
+      return null;
+    }
+
+    // Unrooted: tracks are drawn as markers at the tips themselves, so the
+    // nearest tip is the answer.
+    const leaf = this.pickUnrootedLeaf(sx, sy);
+    if (leaf < 0) return null;
+    const first = this.trackHits.find((h) => h.mode === "unrooted");
+    return first ? { track: first.track, leafIndex: leaf } : null;
+  }
+
+  /** Nearest tip to a screen point in the unrooted layout. */
+  private pickUnrootedLeaf(sx: number, sy: number, tol = 10): number {
+    const t = this.tree;
+    const lo = this.unrooted;
+    if (!t || !lo) return -1;
+    const { zoom, panX, panY } = this.view;
+    const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < t.leaves.length; i++) {
+      const id = t.leaves[i];
+      const x = this.width / 2 + panX + lo.x[id] * R * zoom;
+      const y = this.height / 2 + panY + lo.y[id] * R * zoom;
+      const d = Math.hypot(sx - x, sy - y);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return bestD <= tol ? best : -1;
   }
 
   /** Leaf index at a screen y, rectangular mode. -1 when outside the tree. */
