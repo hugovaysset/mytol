@@ -863,3 +863,113 @@ describe("support scale domain", () => {
     expect(() => r.draw()).not.toThrow();
   });
 });
+
+describe("annotation track hit-testing", () => {
+  const track = (label = "phylum"): TrackInstance => ({
+    type: "colorstrip",
+    label,
+    visible: true,
+    values: ["a", "b", "a", "c"],
+  });
+
+  it("reports the track and leaf under the cursor in linear mode", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setTracks([track()]);
+    r.draw();
+    const m = r.metrics()!;
+    const y = r.screenPosition(tree.leaves[1])!.y;
+    const hit = r.trackAt(m.trackStartX + 4, y);
+    expect(hit).not.toBe(null);
+    expect(hit!.track.label).toBe("phylum");
+    expect(hit!.leafIndex).toBe(1);
+  });
+
+  it("returns nothing over the tree itself", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setTracks([track()]);
+    r.draw();
+    const p = r.screenPosition(tree.root)!;
+    expect(r.trackAt(p.x, p.y)).toBe(null);
+  });
+
+  it("distinguishes stacked tracks", () => {
+    const { r, tree } = makeRenderer(SIMPLE);
+    r.setTracks([track("first"), track("second")]);
+    r.draw();
+    const m = r.metrics()!;
+    const y = r.screenPosition(tree.leaves[0])!.y;
+    const a = r.trackAt(m.trackStartX + 2, y);
+    const b = r.trackAt(m.trackStartX + 30, y);
+    expect(a!.track.label).toBe("first");
+    expect(b!.track.label).toBe("second");
+  });
+
+  it("hit-tests rings in circular mode", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular", rotation: 0, arc: 360 });
+    r.setTracks([track()]);
+    r.setStyle({ showLeafLabels: false });
+    r.draw();
+    // just outside the tip circle, on the ring
+    const R = Math.min(800, 600) * 0.45;
+    const hit = r.trackAt(800 / 2 + R * 1.06, 600 / 2);
+    expect(hit).not.toBe(null);
+    expect(hit!.track.label).toBe("phylum");
+  });
+
+  it("returns nothing well inside the circle", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setView({ mode: "circular" });
+    r.setTracks([track()]);
+    r.draw();
+    expect(r.trackAt(400, 300)).toBe(null);
+  });
+
+  it("has no track hits before anything is drawn", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setTracks([track()]);
+    expect(r.trackAt(0, 0)).toBe(null);
+  });
+});
+
+describe("tracks in unrooted mode", () => {
+  it("draws annotation markers on the tips", () => {
+    const bare = makeRenderer(SIMPLE);
+    bare.r.setView({ mode: "unrooted" });
+    bare.r.setStyle({ showLeafLabels: false });
+    bare.calls.fillRect = 0;
+    bare.r.draw();
+    const before = bare.calls.fillRect;
+
+    const withTrack = makeRenderer(SIMPLE);
+    withTrack.r.setView({ mode: "unrooted" });
+    withTrack.r.setStyle({ showLeafLabels: false });
+    withTrack.r.setTracks([
+      { type: "colorstrip", label: "t", visible: true, values: ["a", "b", "a", "c"] },
+    ]);
+    withTrack.calls.fillRect = 0;
+    withTrack.r.draw();
+    expect(withTrack.calls.fillRect).toBeGreaterThan(before);
+  });
+
+  it("stacks several unrooted tracks outward from each tip", () => {
+    const { r, calls } = makeRenderer(SIMPLE);
+    r.setView({ mode: "unrooted" });
+    r.setStyle({ showLeafLabels: false });
+    const t = (label: string): TrackInstance => ({
+      type: "colorstrip",
+      label,
+      visible: true,
+      values: ["a", "b", "a", "c"],
+    });
+    r.setTracks([t("one")]);
+    calls.fillRect = 0;
+    r.draw();
+    const one = calls.fillRect;
+
+    r.setTracks([t("one"), t("two")]);
+    calls.fillRect = 0;
+    r.draw();
+    expect(calls.fillRect).toBeGreaterThan(one);
+  });
+});

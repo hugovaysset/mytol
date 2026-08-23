@@ -4,4 +4,4 @@
 export * from "./interaction";
 export * from "./treeState";
 export { PhyloTree } from "./PhyloTree";
-export type { PhyloTreeProps, PhyloTreeHandle } from "./PhyloTree";
+export type { PhyloTreeProps, PhyloTreeHandle, HoverTarget } from "./PhyloTree";

@@ -19,6 +19,15 @@ import {
   type RangeInstance,
   type RangeDisplayMode,
 } from "@mytol/renderer";
+
+/** What the pointer is over: a node, or a cell in an annotation track. */
+export interface HoverTarget {
+  nodeId: number;
+  /** Set when the pointer is over an annotation track rather than the tree. */
+  track?: { label: string; type: string; leafIndex: number; value: unknown };
+  /** Leaf row under the pointer, when there is one. */
+  leafIndex?: number;
+}
 import {
   applyClick,
   applyBoxSelect,
@@ -32,6 +41,7 @@ import {
 export interface PhyloTreeHandle {
   /** Node under a screen point, or -1. */
   pick(x: number, y: number): number;
+  trackAt(x: number, y: number): { track: TrackInstance; leafIndex: number } | null;
   screenPosition(nodeId: number): { x: number; y: number } | null;
   fit(): void;
   /** Centre the view on a leaf and zoom in enough to read it. */
@@ -54,6 +64,8 @@ export interface PhyloTreeProps {
   onSelectionChange?(next: SelectionState): void;
   onViewChange?(next: ViewState): void;
   onHoverNode?(nodeId: number): void;
+  /** Richer hover, including annotation tracks. Fires on every move. */
+  onHoverTarget?(target: HoverTarget | null): void;
   onContextMenu?(req: ContextMenuRequest): void;
   /**
    * Whether to call preventDefault on the context-menu event.
@@ -86,6 +98,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     onSelectionChange,
     onViewChange,
     onHoverNode,
+    onHoverTarget,
     onContextMenu,
     onDoubleClickNode,
     suppressNativeContextMenu = true,
@@ -237,9 +250,34 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
         return;
       }
 
+      // Tracks sit outside the tree, so they need their own hit test; a node
+      // pick never reaches them.
+      const overTrack = r.trackAt(p.x, p.y);
+      if (overTrack) {
+        r.setHighlight({ hover: -1 });
+        onHoverNode?.(-1);
+        onHoverTarget?.({
+          nodeId: -1,
+          leafIndex: overTrack.leafIndex,
+          track: {
+            label: overTrack.track.label,
+            type: overTrack.track.type,
+            leafIndex: overTrack.leafIndex,
+            value:
+              overTrack.track.values?.[overTrack.leafIndex] ??
+              overTrack.track.numeric?.[overTrack.leafIndex] ??
+              null,
+          },
+        });
+        return;
+      }
+
       const hit = r.pick(p.x, p.y);
       r.setHighlight({ hover: hit });
       onHoverNode?.(hit);
+      onHoverTarget?.(
+        hit >= 0 ? { nodeId: hit, leafIndex: r.leafIndexAt(p.y) } : null,
+      );
     }
 
     function onUp(e: MouseEvent) {
@@ -271,7 +309,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [emitSelection, onHoverNode, onViewChange]);
+  }, [emitSelection, onHoverNode, onHoverTarget, onViewChange]);
 
   /** Wheel must be non-passive to preventDefault, so it is bound manually. */
   useEffect(() => {
@@ -329,7 +367,8 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
   const handleMouseLeave = useCallback(() => {
     rendererRef.current?.setHighlight({ hover: -1 });
     onHoverNode?.(-1);
-  }, [onHoverNode]);
+    onHoverTarget?.(null);
+  }, [onHoverNode, onHoverTarget]);
 
   // -- imperative handle ----------------------------------------------------
 
@@ -337,6 +376,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     ref,
     (): PhyloTreeHandle => ({
       pick: (x, y) => rendererRef.current?.pick(x, y) ?? -1,
+      trackAt: (x, y) => rendererRef.current?.trackAt(x, y) ?? null,
       screenPosition: (id) => rendererRef.current?.screenPosition(id) ?? null,
       fit: () => rendererRef.current?.fit(),
       focusLeaf: (leafIndex) => {
