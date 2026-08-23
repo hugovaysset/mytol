@@ -116,6 +116,7 @@ export class TreeRenderer {
       zoom: 1,
       rotation: 0,
       arc: 350,
+      fitQuantile: 0.9,
     };
   }
 
@@ -130,7 +131,10 @@ export class TreeRenderer {
   setView(view: Partial<ViewState>): void {
     const before = this.view;
     this.view = { ...before, ...view };
-    if (view.phylogram !== undefined && view.phylogram !== before.phylogram) {
+    if (
+      (view.phylogram !== undefined && view.phylogram !== before.phylogram) ||
+      (view.fitQuantile !== undefined && view.fitQuantile !== before.fitQuantile)
+    ) {
       this.recomputeLayouts();
     }
     this.requestDraw();
@@ -209,7 +213,7 @@ export class TreeRenderer {
       this.unrooted = null;
       return;
     }
-    this.rect = layoutRectangular(this.tree, this.view.phylogram);
+    this.rect = layoutRectangular(this.tree, this.view.phylogram, this.view.fitQuantile);
     this.unrooted = layoutUnrooted(this.tree, !this.view.phylogram);
   }
 
@@ -279,7 +283,7 @@ export class TreeRenderer {
     const labelW = labelsWillDraw ? LABEL_RESERVE_PX : 0;
 
     const usableW = Math.max(10, W - 2 * PADDING - trackWidth - labelW);
-    const sx = usableW / Math.max(1e-9, this.rect.maxX);
+    const sx = usableW / Math.max(1e-9, this.rect.fitX);
 
     const originX = -W / 2 + PADDING;
     const originY = -H / 2 + PADDING;
@@ -304,7 +308,7 @@ export class TreeRenderer {
 
     // Screen-space, not world-space: the rect path draws tracks and labels
     // against an untransformed context, so this must already be in px.
-    const trackStartX = this.view.panX + PADDING + sx * this.rect.maxX + TRACK_GAP;
+    const trackStartX = this.view.panX + PADDING + sx * this.rect.fitX + TRACK_GAP;
     return {
       sx,
       sy,
@@ -634,7 +638,14 @@ export class TreeRenderer {
     ctx.scale(zoom, zoom);
 
     const pt = (id: number) =>
-      rectToPolar(lo.maxX > 0 ? lo.x[id] / lo.maxX : 0, lo.y[id], n, R, rotation, arc);
+      rectToPolar(
+        lo.fitX > 0 ? Math.min(1, lo.x[id] / lo.fitX) : 0,
+        lo.y[id],
+        n,
+        R,
+        rotation,
+        arc,
+      );
 
     const arcPerLeaf = ((arc * Math.PI) / 180 / n) * R * zoom;
     const halfStep = (arc * Math.PI) / 180 / n / 2;
@@ -1108,7 +1119,7 @@ export class TreeRenderer {
       const R = Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION;
       const n = t.leaves.length || 1;
       const p = rectToPolar(
-        lo.maxX > 0 ? lo.x[id] / lo.maxX : 0,
+        lo.fitX > 0 ? Math.min(1, lo.x[id] / lo.fitX) : 0,
         lo.y[id],
         n,
         R,
