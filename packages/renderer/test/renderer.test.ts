@@ -14,6 +14,8 @@ import {
   getTrack,
   registeredTrackTypes,
   autoPalette,
+  paletteFromDomain,
+  DEEP,
   hashColor,
   heatColor,
   supportColor,
@@ -1623,5 +1625,47 @@ describe("circular angle inverse", () => {
     for (const rot of [0, 45, 90, 179, 180, 270, 359]) {
       expect(rowsRoundTrip(48, rot, 350)).toBe(0);
     }
+  });
+});
+
+describe("palette sizing", () => {
+  it("uses deep for ten categories or fewer", () => {
+    const p = paletteFromDomain(["a", "b", "c"]);
+    expect(p.a).toBe(DEEP[0]);
+    expect(p.b).toBe(DEEP[1]);
+  });
+
+  it("keeps the first ten on deep when an eleventh appears", () => {
+    // Switching wholesale to another palette at eleven would repaint every
+    // category already on screen.
+    const ten = paletteFromDomain(Array.from({ length: 10 }, (_, i) => `c${i}`));
+    const eleven = paletteFromDomain(Array.from({ length: 11 }, (_, i) => `c${i}`));
+    for (let i = 0; i < 10; i++) expect(eleven[`c${i}`]).toBe(ten[`c${i}`]);
+    expect(eleven.c10).toBeDefined();
+  });
+
+  it("gives every category its own colour up to twenty", () => {
+    const p = paletteFromDomain(Array.from({ length: 20 }, (_, i) => `c${i}`));
+    expect(new Set(Object.values(p)).size).toBe(20);
+  });
+
+  it("spreads hues beyond twenty rather than repeating", () => {
+    const p = paletteFromDomain(Array.from({ length: 40 }, (_, i) => `c${i}`));
+    expect(new Set(Object.values(p)).size).toBe(40);
+  });
+
+  it("honours the order it is given, so the commonest categories lead", () => {
+    // The server returns a domain commonest-first; the strongest colours
+    // should land on the categories most of the data is in.
+    const p = paletteFromDomain(["common", "rare"]);
+    expect(p.common).toBe(DEEP[0]);
+    expect(p.rare).toBe(DEEP[1]);
+  });
+
+  it("ignores duplicates without spending a colour on them", () => {
+    const p = paletteFromDomain(["a", "b", "a"]);
+    expect(Object.keys(p)).toHaveLength(2);
+    expect(p.a).toBe(DEEP[0]);
+    expect(p.b).toBe(DEEP[1]);
   });
 });
