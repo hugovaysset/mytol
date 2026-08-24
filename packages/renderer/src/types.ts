@@ -151,6 +151,14 @@ export function defaultStyle(): StyleTokens {
 export interface TrackDef<T extends TrackInstance = TrackInstance> {
   /** Column width in screen px. May be overridden per instance. */
   width: number;
+  /**
+   * Keep the track's full width when drawn as a circular ring.
+   *
+   * Rings are normally capped narrow: on a circle the circumference is
+   * plentiful and radius is scarce. Tracks that encode a magnitude ALONG the
+   * radius — a bar, a domain layout — have nothing left to say at 26px.
+   */
+  wideRing?: boolean;
   /** Called once when the track is attached, to precompute scales/palettes. */
   init?(track: T, ctx: TrackInitContext): void;
   /** Draw one leaf's cell. Called only for leaves that survive culling and LOD. */

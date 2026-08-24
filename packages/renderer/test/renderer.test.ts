@@ -1963,3 +1963,76 @@ describe("strips whose palette pools many values into one colour", () => {
     expect(fills.some((q) => q.color === "#918e8e")).toBe(true);
   });
 });
+
+describe("length-scaled tracks", () => {
+  const REC = (length: number, domains: Array<{ name: string; start: number; end: number }>) => ({
+    length,
+    domains,
+  });
+
+  function withDomains(vmax?: number) {
+    const { canvas, calls } = stubCanvas(900, 300);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick("(A:0.1,B:0.1,C:0.1,D:0.1);"));
+    r.resize(900, 300);
+    r.setStyle({ showLeafLabels: false });
+    r.setTracks([
+      {
+        type: "domains",
+        label: "domain architecture",
+        visible: true,
+        values: [
+          REC(200, [{ name: "SIR2_2", start: 10, end: 150 }]),
+          REC(1600, [{ name: "SIR2_2", start: 20, end: 160 }]),
+          REC(400, []),
+          REC(800, [{ name: "TIR_2", start: 600, end: 780 }]),
+        ],
+        palette: { SIR2_2: "#54a24b", TIR_2: "#e45756" },
+        vmax,
+      },
+    ]);
+    calls.rects.length = 0;
+    r.draw();
+    return calls;
+  }
+
+  it("draws every protein to one scale, so a long one looks long", () => {
+    const calls = withDomains(1600);
+    // Backbones are the wide, short rects. Scaled to a shared maximum, the
+    // 1600aa protein's backbone is eight times the 200aa one's.
+    const backs = calls.rects.filter((q) => q.color === "#bbb").map((q) => q.w);
+    backs.sort((a, b) => a - b);
+    expect(backs.length).toBe(4);
+    expect(backs[backs.length - 1] / backs[0]).toBeCloseTo(8, 0);
+  });
+
+  it("falls back to per-protein scaling when given no maximum", () => {
+    const backs = withDomains(undefined)
+      .rects.filter((q) => q.color === "#bbb")
+      .map((q) => q.w);
+    // Every backbone fills the column, which is the old behaviour and wrong
+    // for comparison, but right when there is nothing to compare against.
+    expect(new Set(backs.map((w) => Math.round(w))).size).toBe(1);
+  });
+
+  it("places a domain box at its own coordinates", () => {
+    const calls = withDomains(1600);
+    // TIR_2 sits at 600-780 of a 1600aa scale, so it starts well past halfway.
+    const box = calls.rects.find((q) => q.color === "#e45756");
+    expect(box).toBeDefined();
+    const backbone = calls.rects.find((q) => q.color === "#bbb");
+    expect(box!.x).toBeGreaterThan(backbone!.x + backbone!.w * 0.3);
+  });
+
+  it("rules the column at round residue counts", () => {
+    const calls = withDomains(1600);
+    // One-pixel full-height rules at 500 and 1000 residues.
+    const rules = calls.rects.filter((q) => q.w === 1 && q.h >= 300);
+    expect(rules.length).toBe(2);
+  });
+
+  it("draws no rule beyond the longest protein", () => {
+    const calls = withDomains(600);
+    expect(calls.rects.filter((q) => q.w === 1 && q.h >= 300).length).toBe(1);
+  });
+});

@@ -349,6 +349,7 @@ export function heatValueColor(v: number, track: TrackInstance): string | null {
 /** Continuous value as a bar. */
 registerTrack("bar", {
   width: 60,
+  wideRing: true,
   init(track) {
     if (track.numeric && track.vmax == null) {
       let hi = -Infinity;
@@ -379,6 +380,8 @@ export interface DomainRecord {
 
 registerTrack("domains", {
   width: 220,
+  // Depth is what this track needs; a 26px ring cannot show a layout.
+  wideRing: true,
   init(track) {
     if (!track.palette && track.values) {
       const names = new Set<string>();
@@ -392,12 +395,19 @@ registerTrack("domains", {
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const rec = track.values?.[leafIndex] as DomainRecord | undefined;
     if (!rec || !rec.length) return;
-    const scale = w / rec.length;
+    // One scale for the whole column when the caller supplies the longest
+    // protein. Scaling each cell to its own length would draw every
+    // architecture the same width and destroy the comparison the track is for.
+    const full = track.vmax && track.vmax > 0 ? track.vmax : rec.length;
+    const scale = w / full;
     const midY = y + h / 2;
 
-    // backbone
+    // The backbone IS the protein, so it runs to the protein's own length on
+    // the shared scale. Drawing it full-width made every protein look the same
+    // size and left only the domain boxes carrying any length information.
+    const backbone = Math.max(1, rec.length * scale);
     ctx.fillStyle = "#bbb";
-    ctx.fillRect(x, midY - Math.max(0.5, h * 0.06), w, Math.max(1, h * 0.12));
+    ctx.fillRect(x, midY - Math.max(0.5, h * 0.06), backbone, Math.max(1, h * 0.12));
 
     const boxH = Math.max(2, h * 0.7);
     for (const d of rec.domains ?? []) {
