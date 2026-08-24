@@ -571,19 +571,26 @@ export class TreeRenderer {
         continue;
       }
 
-      const colorP = this.branchColor(id);
       for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
         if (skip[c] === 2) continue;
         const pc = this.screenOf(m, c);
+        // An edge belongs to its CHILD. Branch length and support are both
+        // properties of the node an edge leads to, not the node it leaves, so
+        // every part of the elbow takes the child's colour. Colouring the
+        // vertical connector by the parent — which is what setting the colour
+        // once per parent amounts to — split each edge into two colours and
+        // made the support ramp unreadable.
+        const color = this.branchColor(c);
+
         // vertical connector
         if (Math.abs(pc.y - p.y) >= MIN_EDGE_PIXELS) {
-          ctx.fillStyle = colorP;
+          ctx.fillStyle = color;
           const yA = Math.min(p.y, pc.y);
           ctx.fillRect(p.x - lw / 2, yA, lw, Math.abs(pc.y - p.y));
         }
         // horizontal branch
         if (Math.abs(pc.x - p.x) >= MIN_EDGE_PIXELS) {
-          ctx.fillStyle = this.branchColor(c);
+          ctx.fillStyle = color;
           const xA = Math.min(p.x, pc.x);
           ctx.fillRect(xA, pc.y - lw / 2, Math.abs(pc.x - p.x), lw);
         }
@@ -635,6 +642,11 @@ export class TreeRenderer {
     ctx.closePath();
     ctx.fillStyle = this.branchColor(id);
     ctx.fill();
+  }
+
+  /** Test seam: the colour a branch is drawn in. */
+  branchColorForTest(id: number): string {
+    return this.branchColor(id);
   }
 
   /** Which leaf row a screen point falls on in circular mode, by angle alone. */
@@ -1036,12 +1048,15 @@ export class TreeRenderer {
         if ((t.R[id] - t.L[id]) * arcPerLeaf < s.lodMinPx) continue;
       }
       const p = pt(id);
-      ctx.strokeStyle = this.branchColor(id);
       ctx.lineWidth = lw;
 
       for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
         if (skip[c] === 2) continue;
         const q = pt(c);
+        // Both halves of the edge take the child's colour; see drawRect. Here
+        // the parent's colour was applied to the radial run as well, so a
+        // child's own branch showed its parent's support.
+        ctx.strokeStyle = this.branchColor(c);
         // radial segment out to the child
         ctx.beginPath();
         ctx.moveTo(p.radius * Math.cos(q.angle), p.radius * Math.sin(q.angle));
@@ -1205,9 +1220,9 @@ export class TreeRenderer {
 
     for (let id = 0; id < t.count; id++) {
       if (skip[id] === 2) continue;
-      ctx.strokeStyle = this.branchColor(id);
       for (let c = t.firstChild[id]; c !== -1; c = t.nextSib[c]) {
         if (skip[c] === 2) continue;
+        ctx.strokeStyle = this.branchColor(c);
         const dx = (lo.x[c] - lo.x[id]) * R * zoom;
         const dy = (lo.y[c] - lo.y[id]) * R * zoom;
         if (Math.hypot(dx, dy) < 1) continue; // sub-pixel segment

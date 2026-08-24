@@ -38,13 +38,15 @@ interface Calls {
   rects: Array<{ x: number; y: number; w: number; h: number; color: string }>;
   /** Rects handed to clip(), so a test can check what was masked off. */
   clips: Array<{ x: number; y: number; w: number; h: number }>;
+  /** strokeStyle at each stroke(), for colour assertions on path-drawn modes. */
+  strokes: string[];
 }
 
 function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls } {
   // rect() then clip() is how a clipping region is set; remember the last rect
   // so clip() can record what it actually masked to.
   let pendingRect: { x: number; y: number; w: number; h: number } | null = null;
-  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [] };
+  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [], strokes: [] };
   const ctx: Record<string, unknown> = {
     fillStyle: "",
     strokeStyle: "",
@@ -65,6 +67,7 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
     stroke: () => {
       calls.stroke++;
       calls.ops.push("stroke");
+      calls.strokes.push(String(ctx.strokeStyle));
     },
     arc: () => {
       calls.arc++;
@@ -1667,5 +1670,95 @@ describe("palette sizing", () => {
     expect(Object.keys(p)).toHaveLength(2);
     expect(p.a).toBe(DEEP[0]);
     expect(p.b).toBe(DEEP[1]);
+  });
+});
+
+describe("an edge is coloured by its child", () => {
+  /**
+   * Nested clades with four different support values, so parent and child sit
+   * far apart on the ramp and a mix-up cannot hide in a shared colour.
+   */
+  const TREE =
+    "(((A:1,B:1)0.80:1,(C:1,D:1)1.00:1)0.90:1,(E:1,F:1)0.85:1)0.95;";
+
+  function draw(mode: "rect" | "circular" | "unrooted") {
+    const { r, calls, tree } = makeRenderer(TREE, 600, 400);
+    r.setStyle({
+      colorBySupport: true,
+      showLeafLabels: false,
+      showSupport: false,
+      supportMin: 0.8,
+      supportMax: 1,
+      supportRamp: { low: "#000000", mid: "#0f7a3d", high: "#19e06a" },
+    });
+    r.setView({ mode });
+    calls.rects.length = 0;
+    calls.strokes.length = 0;
+    r.draw();
+    return { r, calls, tree };
+  }
+
+  it("paints both halves of an elbow in the child's colour", () => {
+    const { r, calls, tree } = draw("rect");
+    const bars = calls.rects.filter((q) => q.w <= 3 || q.h <= 3);
+    let checked = 0;
+
+    for (let id = 0; id < tree.count; id++) {
+      const parent = tree.parent[id];
+      if (parent === -1) continue;
+      const p = r.screenPosition(parent);
+      const q = r.screenPosition(id);
+      if (!p || !q) continue;
+
+      // The connector runs down the parent's x through the child's row; the
+      // branch runs along the child's row out to the child.
+      const vertical = bars.find(
+        (b) =>
+          b.h > b.w &&
+          Math.abs(b.x + b.w / 2 - p.x) < 1.5 &&
+          b.y - 1 <= q.y &&
+          b.y + b.h + 1 >= q.y,
+      );
+      const horizontal = bars.find(
+        (b) => b.w > b.h && Math.abs(b.y + b.h / 2 - q.y) < 1.5,
+      );
+      if (!vertical || !horizontal) continue;
+
+      const expected = r.branchColorForTest(id);
+      expect(vertical.color).toBe(expected);
+      expect(horizontal.color).toBe(expected);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(2);
+  });
+
+  /**
+   * Counting is what separates the two rules in the path-drawn modes.
+   *
+   * A node's colour appears once per edge LEADING TO it if edges belong to
+   * their child, and once per edge leaving it if they belong to their parent.
+   * For an internal node with two children those counts differ, so the tally
+   * says which rule is in force.
+   */
+  function tally(strokes: string[], color: string) {
+    return strokes.filter((c) => c === color).length;
+  }
+
+  it("colours the radial run by the child in circular mode", () => {
+    const { r, calls, tree } = draw("circular");
+    const clade = tree.parent[tree.nameToNode.get("A")!];
+    const color = r.branchColorForTest(clade);
+    // Two strokes per edge here — the radial run and the joining arc — so the
+    // one edge leading to this clade is two. Colouring by the parent would
+    // instead paint the two edges leaving it, which is four.
+    expect(tally(calls.strokes, color)).toBe(2);
+  });
+
+  it("colours each segment by its child in unrooted mode", () => {
+    const { r, calls, tree } = draw("unrooted");
+    const clade = tree.parent[tree.nameToNode.get("A")!];
+    const color = r.branchColorForTest(clade);
+    // One stroke per edge: one edge leads here, two leave.
+    expect(tally(calls.strokes, color)).toBe(1);
   });
 });
