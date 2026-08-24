@@ -43,6 +43,117 @@ export const CAT_COLORS = [
   "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac",
 ];
 
+/** Seaborn's "deep" — the default for up to 10 categories. */
+export const DEEP = [
+  "#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3",
+  "#937860", "#DA8BC3", "#8C8C8C", "#CCB974", "#64B5CD",
+];
+
+/** matplotlib tab20 — the default for 11 to 20 categories. */
+export const TAB20 = [
+  "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c", "#98df8a", "#d62728",
+  "#ff9896", "#9467bd", "#c5b0d5", "#8c564b", "#c49c94", "#e377c2", "#f7b6d2",
+  "#7f7f7f", "#c7c7c7", "#bcbd22", "#dbdb8d", "#17becf", "#9edae5",
+];
+
+/**
+ * Well-spread colours for more categories than any named palette covers.
+ *
+ * Hues advance by the golden angle, which spreads them evenly however many are
+ * asked for, and lightness/saturation cycle so neighbouring hues stay
+ * distinguishable. Deterministic in the index, not actually random: the user
+ * asked for stable colours, and a palette that changes between sessions is
+ * worse than one that merely repeats.
+ */
+export function spreadColors(n: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const h = (i * 137.508) % 360;
+    const s = [68, 52, 80][i % 3];
+    const l = [52, 38, 64][(i + 1) % 3];
+    out.push(hslToHex(h, s, l));
+  }
+  return out;
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (k: number) => {
+    const m = (k + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(m - 3, 9 - m, 1));
+    return Math.round(255 * v)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/**
+ * The palette a categorical track should use, chosen by how many categories it
+ * has: deep up to 10, tab20 up to 20, spread colours beyond.
+ */
+export function paletteFor(n: number): string[] {
+  if (n <= DEEP.length) return DEEP;
+  if (n <= TAB20.length) return TAB20;
+  return spreadColors(n);
+}
+
+/** matplotlib "Reds", the default continuous ramp. */
+export const REDS = [
+  "#fff5f0", "#fee0d2", "#fcbba1", "#fc9272", "#fb6a4a",
+  "#ef3b2c", "#cb181d", "#a50f15", "#67000d",
+];
+
+/** A continuous colour scale with an optional off-centre midpoint. */
+export interface Ramp {
+  colors: string[];
+  vmin: number;
+  vmax: number;
+  /** Value that lands halfway along the ramp. Defaults to the true middle. */
+  vmid?: number;
+  /** Colour for exactly vmin (or below), when it should stand apart. */
+  zeroColor?: string;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
+}
+
+/**
+ * Sample a ramp.
+ *
+ * `vmid` bends the scale: values below it use the lower half of the colours and
+ * values above it the upper half. Defense scores need this — almost everything
+ * sits near zero, so a linear scale over the full range leaves the whole column
+ * looking blank.
+ */
+export function rampColor(v: number, ramp: Ramp): string | null {
+  if (v == null || Number.isNaN(v)) return null;
+  const { colors, vmin, vmax } = ramp;
+  if (ramp.zeroColor != null && v <= vmin) return ramp.zeroColor;
+  const mid = ramp.vmid ?? (vmin + vmax) / 2;
+  let t: number;
+  if (v <= mid) {
+    t = mid > vmin ? (0.5 * (v - vmin)) / (mid - vmin) : 0;
+  } else {
+    t = vmax > mid ? 0.5 + (0.5 * (v - mid)) / (vmax - mid) : 1;
+  }
+  t = Math.max(0, Math.min(1, t));
+  const pos = t * (colors.length - 1);
+  const i = Math.min(colors.length - 2, Math.floor(pos));
+  const f = pos - i;
+  const a = hexToRgb(colors[i]);
+  const b = hexToRgb(colors[i + 1]);
+  return `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)},${Math.round(
+    a[1] + (b[1] - a[1]) * f,
+  )},${Math.round(a[2] + (b[2] - a[2]) * f)})`;
+}
+
 /**
  * Assign a colour per category, deterministically.
  *
@@ -56,11 +167,17 @@ export const CAT_COLORS = [
  * need colours stable across edits should pass the full domain once, rather
  * than letting it be inferred from whatever is currently on screen.
  */
-export function autoPalette(categories: Iterable<string>, colors = PALETTE): Record<string, string> {
+export function autoPalette(
+  categories: Iterable<string>,
+  colors?: string[],
+): Record<string, string> {
   const out: Record<string, string> = {};
   const sorted = Array.from(new Set(categories)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  // Sizing the palette to the category count is what keeps one category to one
+  // colour: a fixed 12-colour list silently reuses colours past the twelfth.
+  const cols = colors ?? paletteFor(sorted.length);
   sorted.forEach((c, i) => {
-    out[c] = colors[i % colors.length];
+    out[c] = cols[i % cols.length];
   });
   return out;
 }
@@ -165,12 +282,19 @@ registerTrack("heatmap", {
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const v = track.numeric?.[leafIndex];
     if (v == null || Number.isNaN(v)) return;
-    const c = heatColor(v, track.vmin ?? 0, track.vmax ?? 1);
+    const c = heatValueColor(v, track);
     if (!c) return;
     ctx.fillStyle = c;
     ctx.fillRect(x, y, w, h);
   },
 });
+
+/** The colour a continuous track gives a value: its own ramp, or Reds. */
+export function heatValueColor(v: number, track: TrackInstance): string | null {
+  const ramp = track.ramp as Ramp | undefined;
+  if (ramp) return rampColor(v, ramp);
+  return rampColor(v, { colors: REDS, vmin: track.vmin ?? 0, vmax: track.vmax ?? 1 });
+}
 
 /** Continuous value as a bar. */
 registerTrack("bar", {

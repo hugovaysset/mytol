@@ -193,6 +193,14 @@ export interface TrackInstance {
   palette?: Record<string, string>;
   vmin?: number;
   vmax?: number;
+  /** Continuous scale for numeric tracks; see `Ramp` in the registry. */
+  ramp?: {
+    colors: string[];
+    vmin: number;
+    vmax: number;
+    vmid?: number;
+    zeroColor?: string;
+  };
   color?: string;
   [key: string]: unknown;
 }

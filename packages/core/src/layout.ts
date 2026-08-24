@@ -25,6 +25,8 @@ export interface RectLayout {
    * marked, not hidden.
    */
   fitX: number;
+  /** Deepest x reached by any leaf under each node. */
+  subtreeMaxX: Float64Array;
   /** Vertical extent in leaf-index units. */
   height: number;
 }
@@ -105,8 +107,23 @@ export function layoutRectangular(
   }
   if (!(fitX > 0)) fitX = maxX || 1;
 
+  // How deep each subtree reaches, so a clade too small to draw in full can
+  // still be drawn as a wedge covering the ground it actually occupies.
+  // Without this the level-of-detail pass simply drops those clades and the
+  // tree appears to stop well short of its own tips.
+  const subtreeMaxX = new Float64Array(t.count);
+  {
+    const pre = preOrder(t);
+    for (let i = 0; i < t.count; i++) subtreeMaxX[i] = x[i];
+    for (let k = pre.length - 1; k >= 0; k--) {
+      const id = pre[k];
+      const p = t.parent[id];
+      if (p !== -1 && subtreeMaxX[id] > subtreeMaxX[p]) subtreeMaxX[p] = subtreeMaxX[id];
+    }
+  }
+
   const height = t.leaves.length > 0 ? t.leaves.length - 1 : 1;
-  return { x, y, maxX, fitX, height };
+  return { x, y, maxX, fitX, subtreeMaxX, height };
 }
 
 function preOrder(t: Tree): Int32Array {

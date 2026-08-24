@@ -29,10 +29,19 @@ interface Calls {
   arc: number;
   fill: number;
   ops: string[];
+  /** x of every moveTo/lineTo, for extent assertions. */
+  xs: number[];
+  /** Geometry and fillStyle of each fillRect, for colour assertions. */
+  rects: Array<{ x: number; y: number; w: number; h: number; color: string }>;
+  /** Rects handed to clip(), so a test can check what was masked off. */
+  clips: Array<{ x: number; y: number; w: number; h: number }>;
 }
 
 function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls } {
-  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [] };
+  // rect() then clip() is how a clipping region is set; remember the last rect
+  // so clip() can record what it actually masked to.
+  let pendingRect: { x: number; y: number; w: number; h: number } | null = null;
+  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [] };
   const ctx: Record<string, unknown> = {
     fillStyle: "",
     strokeStyle: "",
@@ -40,9 +49,11 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
     font: "",
     textBaseline: "",
     textAlign: "",
-    fillRect: () => {
+    fillRect: (x: number, y: number, w: number, h: number) => {
       calls.fillRect++;
       calls.ops.push("fillRect");
+      calls.xs.push(x, x + w);
+      calls.rects.push({ x, y, w, h, color: String(ctx.fillStyle) });
     },
     fillText: () => {
       calls.fillText++;
@@ -56,12 +67,23 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
       calls.arc++;
     },
     beginPath: () => {},
-    moveTo: () => {},
-    lineTo: () => {},
+    // Path coordinates are recorded so a test can ask how far right the drawing
+    // actually reached.
+    moveTo: (x: number) => {
+      calls.xs.push(x);
+    },
+    lineTo: (x: number) => {
+      calls.xs.push(x);
+    },
     closePath: () => {},
     ellipse: () => {},
-    rect: () => {},
-    clip: () => {},
+    rect: (x: number, y: number, w: number, h: number) => {
+      pendingRect = { x, y, w, h };
+    },
+    clip: () => {
+      if (pendingRect) calls.clips.push(pendingRect);
+      pendingRect = null;
+    },
     // fill() is how filled paths are drawn — the circular highlight wedges use
     // it rather than fillRect, so it has to count as an operation.
     fill: () => {
@@ -1064,5 +1086,378 @@ describe("support colouring defaults", () => {
     expect(norm(1.0)).toBeCloseTo(1, 9);
     // and a poorly supported branch clamps to the foot rather than wrapping
     expect(Math.max(0, Math.min(1, norm(0.4)))).toBe(0);
+  });
+});
+
+describe("level of detail wedges", () => {
+  // Balanced topology, uneven tip lengths. On a short canvas most clades fall
+  // under lodMinPx, which is exactly the case that used to make the tree stop
+  // well short of its own tips: the deep structure lives in the small clades.
+  function ragged(n: number): string {
+    let nodes = Array.from(
+      { length: n },
+      (_, i) => `L${i}:${(0.02 + ((i * 7) % 11) * 0.06).toFixed(3)}`,
+    );
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.02` : nodes[i]);
+      }
+      nodes = next;
+    }
+    return nodes[0] + ";";
+  }
+
+  it("draws culled clades as wedges rather than dropping them", () => {
+    const { r, calls } = makeRenderer(ragged(4000), 400, 120);
+    r.setStyle({ lodMinPx: 4, showLeafLabels: false });
+    calls.fill = 0;
+    r.draw();
+    // Wedges are filled paths; branches are fillRects, so a non-zero fill()
+    // count can only come from the wedges.
+    expect(calls.fill).toBeGreaterThan(0);
+    expect(r.collapsedClades().length).toBeGreaterThan(0);
+  });
+
+  it("reaches the fitted tip column instead of stopping at the backbone", () => {
+    const { r, calls } = makeRenderer(ragged(4000), 400, 120);
+    r.setStyle({ lodMinPx: 4, showLeafLabels: false });
+    calls.xs.length = 0;
+    r.draw();
+    const withWedges = Math.max(...calls.xs);
+
+    // Same tree, same canvas, but nothing culled: that is the honest extent.
+    const full = makeRenderer(ragged(4000), 400, 120);
+    full.r.setStyle({ lodMinPx: 0, showLeafLabels: false });
+    full.calls.xs.length = 0;
+    full.r.draw();
+    const uncalled = Math.max(...full.calls.xs);
+
+    expect(withWedges).toBeGreaterThan(uncalled * 0.9);
+  });
+
+  it("collapses each clade once, never one nested inside another", () => {
+    const { r, tree } = makeRenderer(ragged(4000), 400, 120);
+    r.setStyle({ lodMinPx: 4, showLeafLabels: false });
+    r.draw();
+    const c = r.collapsedClades();
+    expect(c.length).toBeGreaterThan(0);
+    // Sorted by left edge, each clade must begin at or after the previous one
+    // ended. A pairwise check is quadratic, and a polytomy collapses thousands.
+    const sorted = [...c].sort((a, b) => tree.L[a] - tree.L[b]);
+    let reach = -1;
+    let overlaps = 0;
+    for (const id of sorted) {
+      if (tree.L[id] < reach) overlaps++;
+      reach = Math.max(reach, tree.R[id]);
+    }
+    expect(overlaps).toBe(0);
+  });
+});
+
+
+describe("annotation strips below one pixel per row", () => {
+  // 4000 leaves on a 120px canvas: about 0.03px per row. One common category,
+  // one rare one — the shape of a real defence-system annotation.
+  function stripSetup(h = 120) {
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r, calls, tree } = makeRenderer(nodes[0] + ";", 500, h);
+    const values = Array.from({ length: 4000 }, (_, i) =>
+      i % 97 === 0 ? "Thoeris" : "PD-T7-2",
+    );
+    r.setTracks([
+      {
+        type: "colorstrip",
+        label: "df_type",
+        visible: true,
+        values,
+        palette: { Thoeris: "#111111", "PD-T7-2": "#eeeeee" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
+    return { r, calls, tree, values };
+  }
+
+  /** Only the fills inside the annotation column, not the branches. */
+  function stripFills(calls: Calls) {
+    const wide = calls.rects.filter((q) => q.w === 18);
+    return wide;
+  }
+
+  it("paints each category in exactly one colour", () => {
+    const { r, calls } = stripSetup();
+    calls.rects.length = 0;
+    r.draw();
+    const colors = new Set(stripFills(calls).map((q) => q.color));
+    // Two categories, two colours — no blended third shade.
+    expect(colors.size).toBeLessThanOrEqual(2);
+    for (const c of colors) expect(["#111111", "#eeeeee"]).toContain(c);
+  });
+
+  it("draws strip cells on whole pixels, so nothing antialiases together", () => {
+    const { r, calls } = stripSetup();
+    calls.rects.length = 0;
+    r.draw();
+    for (const q of stripFills(calls)) {
+      expect(Number.isInteger(q.y)).toBe(true);
+      expect(q.h).toBe(1);
+    }
+  });
+
+  it("keeps a rare category visible instead of letting the common one win", () => {
+    const { r, calls } = stripSetup();
+    calls.rects.length = 0;
+    r.draw();
+    const rare = stripFills(calls).filter((q) => q.color === "#111111");
+    // ~41 Thoeris leaves spread over 4000; a majority vote per pixel row would
+    // show none of them at all.
+    expect(rare.length).toBeGreaterThan(0);
+  });
+
+  it("marks the categories a pixel row could not show", () => {
+    const { r, calls } = stripSetup();
+    r.draw();
+    // The displaced common category becomes a marker: a filled caret, drawn
+    // with fill() rather than fillRect().
+    expect(calls.fill).toBeGreaterThan(0);
+  });
+
+  it("reports the leaf whose value is actually painted under the cursor", () => {
+    const { r, values } = stripSetup();
+    r.draw();
+    let checked = 0;
+    for (let y = 20; y < 100; y += 3) {
+      const hit = r.trackAt(r.metricsForTest().trackStartX + 4, y);
+      if (!hit || hit.leafIndex < 0) continue;
+      expect(values[hit.leafIndex]).not.toBeNull();
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it("hovering a marker names the hidden category and how many leaves carry it", () => {
+    const { r } = stripSetup();
+    r.draw();
+    const found = r.markersForTest();
+    expect(found.length).toBeGreaterThan(0);
+    const mk = found[0];
+    const hit = r.trackAt((mk.x0 + mk.x1) / 2, mk.y);
+    expect(hit?.hiddenCategory).toBe(mk.category);
+    expect(hit?.hiddenCount).toBeGreaterThan(0);
+  });
+
+  it("goes back to one cell per leaf once rows are thick enough", () => {
+    const { r, calls } = stripSetup(120);
+    r.setView({ vZoom: 400 });
+    calls.rects.length = 0;
+    r.draw();
+    const fills = stripFills(calls);
+    expect(fills.length).toBeGreaterThan(0);
+    // Cells now stand taller than a pixel, i.e. they are real rows again.
+    expect(Math.max(...fills.map((q) => q.h))).toBeGreaterThan(1);
+  });
+});
+
+describe("continuous strips below one pixel per row", () => {
+  function scoreSetup(vals: (i: number) => number) {
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r, calls } = makeRenderer(nodes[0] + ";", 500, 120);
+    r.setTracks([
+      {
+        type: "heatmap",
+        label: "defense_score",
+        visible: true,
+        numeric: Float64Array.from({ length: 4000 }, (_, i) => vals(i)),
+        vmin: 0,
+        vmax: 1,
+        ramp: { colors: ["#ffffff", "#ff0000"], vmin: 0, vmid: 0.2, vmax: 0.5, zeroColor: "#eeeeee" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
+    calls.rects.length = 0;
+    r.draw();
+    return calls.rects.filter((q) => q.w === 18);
+  }
+
+  it("summarises a pixel row by its mean, not by its largest value", () => {
+    // One leaf in forty scores 1.0, the rest zero. Taking the maximum would
+    // paint the entire column its top colour and say nothing at all.
+    const fills = scoreSetup((i) => (i % 40 === 0 ? 1 : 0));
+    const top = fills.filter((q) => q.color === "rgb(255,0,0)");
+    expect(top.length / fills.length).toBeLessThan(0.5);
+  });
+
+  it("still reaches the top of the ramp where values really are high", () => {
+    const fills = scoreSetup(() => 1);
+    expect(fills.length).toBeGreaterThan(0);
+    for (const q of fills) expect(q.color).toBe("rgb(255,0,0)");
+  });
+
+  it("paints an all-zero stretch as the zero colour, not the palest red", () => {
+    const fills = scoreSetup(() => 0);
+    expect(fills.length).toBeGreaterThan(0);
+    for (const q of fills) expect(q.color).toBe("#eeeeee");
+  });
+});
+
+describe("hovering an annotation column", () => {
+  function sparse() {
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r } = makeRenderer(nodes[0] + ";", 500, 120);
+    // Most leaves carry no value at all — the shape of a real DefenseFinder
+    // column, where the large majority of proteins are simply not annotated.
+    r.setTracks([
+      {
+        type: "colorstrip",
+        label: "df_type",
+        visible: true,
+        values: Array.from({ length: 4000 }, (_, i) => (i % 500 === 0 ? "Thoeris" : null)),
+        palette: { Thoeris: "#111111" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
+    r.draw();
+    return r;
+  }
+
+  it("claims the whole column, even where the values are empty", () => {
+    const r = sparse();
+    const x = r.metricsForTest().trackStartX + 4;
+    // Sample inside the rows themselves; above and below them the column is
+    // padding and correctly matches nothing.
+    const top = Math.ceil(r.screenPosition(0)?.y ?? 0) + 1;
+    let hits = 0;
+    let sampled = 0;
+    for (let y = top; y < 120 - 41; y += 2) {
+      sampled++;
+      if (r.trackAt(x, y)) hits++;
+    }
+    // Falling through to the tree behind an empty row is what made the tooltip
+    // answer with the leaf's details instead of the dataset's.
+    expect(sampled).toBeGreaterThan(5);
+    expect(hits).toBe(sampled);
+  });
+
+  it("names a leaf on the row even when that leaf has no value", () => {
+    const r = sparse();
+    const x = r.metricsForTest().trackStartX + 4;
+    let checked = 0;
+    for (let y = 41; y < 79; y += 2) {
+      const hit = r.trackAt(x, y);
+      if (!hit) continue;
+      expect(hit.leafIndex).toBeGreaterThanOrEqual(0);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(5);
+  });
+});
+
+describe("tips overhanging the fitted edge", () => {
+  // One tip far deeper than the rest: exactly what fitting to a quantile is
+  // there to survive.
+  const OUTLIER = "((A:0.1,B:0.1):0.1,(C:0.1,D:9.0):0.1);";
+
+  it("clips the tree where the annotation columns begin", () => {
+    const { r, calls } = makeRenderer(OUTLIER, 400, 200);
+    r.setTracks([
+      { type: "colorstrip", label: "x", visible: true, values: ["a", "b", "c", "d"] },
+    ]);
+    r.setView({ fitQuantile: 0.5 });
+    calls.clips.length = 0;
+    calls.rects.length = 0;
+    r.draw();
+    const m = r.metricsForTest();
+
+    // Without the clip the deep tip would be drawn straight across the strip.
+    const overhangs = calls.rects.some((q) => q.w !== 18 && q.x + q.w > m.trackStartX);
+    expect(overhangs).toBe(true);
+
+    const guard = calls.clips.find((c) => c.x === 0 && c.h >= 200);
+    expect(guard).toBeDefined();
+    expect(guard!.w).toBeLessThanOrEqual(m.trackStartX);
+    expect(guard!.w).toBeGreaterThan(m.trackStartX - 10);
+  });
+
+  it("still lets tips overhang when there are no tracks to protect", () => {
+    const { r, calls } = makeRenderer(OUTLIER, 400, 200);
+    r.setTracks([]);
+    r.setView({ fitQuantile: 0.5 });
+    calls.clips.length = 0;
+    r.draw();
+    // Framing on half the tips is a deliberate choice to let the rest run past
+    // the edge; with nothing out there to collide with, nothing is masked.
+    expect(calls.clips.filter((c) => c.x === 0 && c.h >= 200)).toHaveLength(0);
+  });
+});
+
+describe("hidden-category markers", () => {
+  function twoCategories(pattern: (i: number) => string) {
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r } = makeRenderer(nodes[0] + ";", 500, 120);
+    r.setTracks([
+      {
+        type: "colorstrip",
+        label: "tax_domain",
+        visible: true,
+        values: Array.from({ length: 4000 }, (_, i) => pattern(i)),
+        palette: { Bacteria: "#dd8452", Archaea: "#4c72b0" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
+    r.draw();
+    return r;
+  }
+
+  it("stays quiet when the displaced category is drawn nearby anyway", () => {
+    // Archaea comes in occasional clumps. It is the rarer category, so it wins
+    // every pixel row it lands on and displaces Bacteria there — but Bacteria
+    // still holds the rows either side, plainly visible.
+    const r = twoCategories((i) => (i % 400 < 4 ? "Archaea" : "Bacteria"));
+    expect(r.markersForTest()).toHaveLength(0);
+  });
+
+  it("marks a category the strip cannot show at all", () => {
+    // Archaea appears on every pixel row, so it wins every one and Bacteria is
+    // never drawn: without a marker the strip would claim the tree is entirely
+    // archaeal.
+    const r = twoCategories((i) => (i % 2 === 0 ? "Archaea" : "Bacteria"));
+    const marks = r.markersForTest();
+    expect(marks.length).toBeGreaterThan(0);
+    for (const mk of marks) expect(mk.category).toBe("Bacteria");
+  });
+
+  it("counts how many leaves each marker stands for", () => {
+    const r = twoCategories((i) => (i % 2 === 0 ? "Archaea" : "Bacteria"));
+    const marks = r.markersForTest();
+    expect(marks.length).toBeGreaterThan(0);
+    for (const mk of marks) expect(mk.count).toBeGreaterThan(0);
   });
 });
