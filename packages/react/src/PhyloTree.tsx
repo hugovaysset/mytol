@@ -32,6 +32,8 @@ export interface HoverTarget {
     /** Set when the pointer is over a marker for a category the zoom hides. */
     hiddenCategory?: string;
     hiddenCount?: number;
+    /** Set over a domain-layout track: the domain under the cursor. */
+    domain?: { name: string; acc?: string; start: number; end: number };
   };
   /** Leaf row under the pointer, when there is one. */
   leafIndex?: number;
@@ -280,6 +282,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
                   null),
             hiddenCategory: overTrack.hiddenCategory,
             hiddenCount: overTrack.hiddenCount,
+            domain: overTrack.domain,
           },
         });
         return;

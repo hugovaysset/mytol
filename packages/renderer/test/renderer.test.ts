@@ -939,8 +939,11 @@ describe("annotation track hit-testing", () => {
     r.setTracks([track()]);
     r.setStyle({ showLeafLabels: false });
     r.draw();
-    // just outside the tip circle, on the ring
-    const R = Math.min(800, 600) * 0.45;
+    // Just outside the tip circle, on the ring. The radius comes from the
+    // renderer rather than being recomputed here: it depends on how much the
+    // rings take, and a second copy of that arithmetic is how drawing and
+    // picking drift apart.
+    const R = r.circularRadiusForTest();
     const hit = r.trackAt(800 / 2 + R * 1.06, 600 / 2);
     expect(hit).not.toBe(null);
     expect(hit!.track.label).toBe("phylum");
@@ -2034,5 +2037,125 @@ describe("length-scaled tracks", () => {
   it("draws no rule beyond the longest protein", () => {
     const calls = withDomains(600);
     expect(calls.rects.filter((q) => q.w === 1 && q.h >= 300).length).toBe(1);
+  });
+});
+
+describe("hovering a domain in a layout track", () => {
+  const REC = (length: number, domains: Array<{ name: string; acc: string; start: number; end: number }>) => ({
+    length,
+    domains,
+  });
+
+  function setup(mode: "rect" | "circular" = "rect") {
+    const { canvas } = stubCanvas(900, 300);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick("(A:0.1,B:0.1,C:0.1,D:0.1);"));
+    r.resize(900, 300);
+    r.setStyle({ showLeafLabels: false });
+    r.setView({ mode });
+    r.setTracks([
+      {
+        type: "domains",
+        label: "domain architecture",
+        visible: true,
+        values: [
+          REC(1000, [
+            { name: "SIR2_2", acc: "PF13289.13", start: 100, end: 300 },
+            { name: "TIR_2", acc: "PF13676.11", start: 600, end: 800 },
+          ]),
+          REC(1000, []),
+          REC(1000, []),
+          REC(1000, []),
+        ],
+        palette: { SIR2_2: "#54a24b", TIR_2: "#e45756" },
+        vmax: 1000,
+      },
+    ]);
+    r.draw();
+    return r;
+  }
+
+  /** A point a given number of residues into the first tip's layout. */
+  function atResidue(r: TreeRenderer, aa: number) {
+    const m = r.metricsForTest();
+    const y = r.screenPosition(r.treeForTest().leaves[0])!.y;
+    return { x: m.trackStartX + (aa / 1000) * m.trackWidth, y };
+  }
+
+  it("names the domain under the cursor", () => {
+    const r = setup();
+    const hit = r.trackAt(...([atResidue(r, 200).x, atResidue(r, 200).y] as [number, number]));
+    expect(hit?.domain?.name).toBe("SIR2_2");
+    expect(hit?.domain?.acc).toBe("PF13289.13");
+  });
+
+  it("tells the domains apart along the protein", () => {
+    const r = setup();
+    const p = atResidue(r, 700);
+    expect(r.trackAt(p.x, p.y)?.domain?.name).toBe("TIR_2");
+  });
+
+  it("reports no domain in the gap between them", () => {
+    const r = setup();
+    const p = atResidue(r, 450);
+    const hit = r.trackAt(p.x, p.y);
+    // Still over the track — the backbone is there — but not over a domain.
+    expect(hit).not.toBeNull();
+    expect(hit?.domain).toBeUndefined();
+  });
+
+  it("measures along the radius in circular mode", () => {
+    const r = setup("circular");
+    // Walk outward through the ring at the first tip's angle.
+    const found = new Set<string>();
+    for (let rad = 0; rad < 500; rad += 2) {
+      const a = r.leafAngleForTest(0);
+      const hit = r.trackAt(450 + rad * Math.cos(a), 150 + rad * Math.sin(a));
+      if (hit?.domain) found.add(hit.domain.name);
+    }
+    expect(found).toEqual(new Set(["SIR2_2", "TIR_2"]));
+  });
+});
+
+describe("a wide ring on a small canvas", () => {
+  function rings(w: number, h: number) {
+    const { canvas, calls } = stubCanvas(w, h);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick("(A:0.1,B:0.1,C:0.1,D:0.1);"));
+    r.resize(w, h);
+    r.setView({ mode: "circular" });
+    r.setStyle({ showLeafLabels: false });
+    r.setTracks([
+      {
+        type: "domains",
+        label: "domain architecture",
+        visible: true,
+        values: [1, 2, 3, 4].map(() => ({
+          length: 1000,
+          domains: [{ name: "SIR2_2", start: 100, end: 300 }],
+        })),
+        palette: { SIR2_2: "#54a24b" },
+        vmax: 1000,
+      },
+    ]);
+    calls.maxX = -Infinity;
+    r.draw();
+    return { r, calls };
+  }
+
+  it("keeps the ring inside the pane rather than drawing it off the edge", () => {
+    // The layout ring wants 220px of radius; a 500px pane has nothing like
+    // that left once the tree has taken its share.
+    const { r } = rings(500, 500);
+    const hit = r.trackAt(250 + 200, 250);
+    void hit;
+    const outer = r.ringOuterForTest();
+    expect(outer).toBeLessThanOrEqual(250);
+  });
+
+  it("still gives it its full width when there is room", () => {
+    const { r } = rings(1600, 1600);
+    // Plenty of radius here, so the ring is not squeezed.
+    expect(r.ringOuterForTest()).toBeGreaterThan(600);
   });
 });

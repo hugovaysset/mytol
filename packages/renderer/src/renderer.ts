@@ -44,9 +44,11 @@ const PADDING = 40;
 const LABEL_RESERVE_PX = 150;
 /** Rows shorter than this cannot carry a readable label, so none is drawn. */
 const LABEL_MIN_ROW_PX = 7;
-const CIRC_RADIUS_FRACTION = 0.45;
 const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
+/** Narrowest a magnitude-carrying ring may be squeezed to. */
+const MIN_WIDE_RING = 30;
+
 /** Residue counts marked on length-scaled tracks. */
 const LENGTH_GUIDES = [500, 1000];
 
@@ -79,6 +81,8 @@ export interface TrackHover {
   hiddenCategory?: string;
   /** How many leaves in this stretch carry it. */
   hiddenCount?: number;
+  /** Set only over a domain-layout track: the domain under the cursor. */
+  domain?: { name: string; acc?: string; start: number; end: number };
 }
 
 export class TreeRenderer {
@@ -121,6 +125,14 @@ export class TreeRenderer {
   private lastMetrics: RectMetrics | null = null;
   /** Clades folded by LOD in the last rect draw, outermost only. */
   private lodCollapsed: number[] = [];
+  /**
+   * Sampling stride for tracks drawn one cell per several rows.
+   *
+   * Those cells stand for a range of leaves, so the leaf a screen y maps to is
+   * usually NOT the one drawn there. Hovering has to snap to the drawn record
+   * or the tooltip describes a protein that is not on screen.
+   */
+  private sampled = new Map<TrackInstance, { start: number; step: number }>();
   /**
    * Rarity order per categorical track, cached: rarer categories win the
    * contest for a pixel row, so a small category is not erased by a large one.
@@ -681,6 +693,34 @@ export class TreeRenderer {
     return this.branchColor(id);
   }
 
+  /**
+   * The domain under a point, measured along the track's own axis.
+   *
+   * `offset` is how far into the column the cursor is and `width` how wide the
+   * column is, in the same units — x in a rectangular layout, radius in a
+   * radial one — so one function serves both. Returns undefined for any track
+   * that is not a domain layout.
+   */
+  private domainAt(
+    track: TrackInstance,
+    leafIndex: number,
+    offset: number,
+    width: number,
+  ): { name: string; acc?: string; start: number; end: number } | undefined {
+    if (track.type !== "domains" || width <= 0) return undefined;
+    const rec = track.values?.[leafIndex] as
+      | { length: number; domains: Array<{ name: string; acc?: string; start: number; end: number }> }
+      | undefined;
+    if (!rec?.length) return undefined;
+    // The same scale drawCell uses, or the boxes and the hit test disagree.
+    const full = track.vmax && track.vmax > 0 ? track.vmax : rec.length;
+    const aa = (offset / width) * full;
+    for (const d of rec.domains ?? []) {
+      if (aa >= d.start && aa <= d.end) return d;
+    }
+    return undefined;
+  }
+
   /** Which leaf row a screen point falls on in circular mode, by angle alone. */
   leafRowAtPoint(sx: number, sy: number): number {
     const t = this.tree;
@@ -689,6 +729,27 @@ export class TreeRenderer {
     const wx = (sx - this.width / 2 - panX) / zoom;
     const wy = (sy - this.height / 2 - panY) / zoom;
     return this.leafRowAtAngle(Math.atan2(wy, wx), t.leaves.length || 1);
+  }
+
+  /** Test seam: the radius the tree gets, after the rings take their share. */
+  circularRadiusForTest(): number {
+    return this.circularRadius();
+  }
+
+  /** Test seam: how far out the annotation rings reached in the last draw. */
+  private lastRingOuter = 0;
+  ringOuterForTest(): number {
+    return this.lastRingOuter;
+  }
+
+  /** Test seam: the tree currently loaded. */
+  treeForTest(): Tree {
+    return this.tree as Tree;
+  }
+
+  /** Test seam: the screen angle of a leaf row in circular mode. */
+  leafAngleForTest(row: number): number {
+    return this.leafAngle(row, (this.tree as Tree).leaves.length || 1);
   }
 
   /** Test seam: the rect metrics of the current view. */
@@ -778,13 +839,17 @@ export class TreeRenderer {
           def.drawCell(ctx, colX, y, w, Math.max(1, rowH * step), i, track as never);
         }
         this.bandLeaf.delete(track);
-      } else if (rowH < 2) this.drawTrackAggregated(m, rowH, track, colX, w);
-      else {
+        this.sampled.set(track, { start: m.visibleLeafStart, step });
+      } else if (rowH < 2) {
+        this.drawTrackAggregated(m, rowH, track, colX, w);
+        this.sampled.delete(track);
+      } else {
         for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i++) {
           const y = this.rowY(m, i) - rowH / 2;
           def.drawCell(ctx, colX, y, w, rowH, i, track as never);
         }
         this.bandLeaf.delete(track);
+        this.sampled.delete(track);
       }
 
       this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
@@ -1135,7 +1200,7 @@ export class TreeRenderer {
     const s = this.style;
     const W = this.width;
     const H = this.height;
-    const R = Math.min(W, H) * CIRC_RADIUS_FRACTION;
+    const R = this.circularRadius();
     const n = t.leaves.length || 1;
     const { zoom, panX, panY, rotation, arc } = this.view;
 
@@ -1280,6 +1345,38 @@ export class TreeRenderer {
    *
    * Returns the outer radius reached, so labels know where to start.
    */
+  /**
+   * The radius the tree itself gets in a circular layout.
+   *
+   * Annotation rings are drawn OUTSIDE the tips, so every ring added has to
+   * come out of the tree's own radius — otherwise a wide one, like a domain
+   * layout, is drawn beyond the edge of the pane where it can be neither seen
+   * nor hovered. The tree shrinks instead, as it does in iToL.
+   *
+   * Drawing, picking and `screenPosition` all read the radius from here. They
+   * used to compute it independently, and the two times they have drifted
+   * apart in this file the symptom was the same: clicking selected something
+   * other than what was under the cursor.
+   */
+  private circularRadius(): number {
+    const half = Math.min(this.width, this.height) / 2;
+    // What the tree gets when nothing is drawn around it.
+    const BARE = 0.9;
+    let rings = 0;
+    for (const track of this.tracks) {
+      if (!track.visible) continue;
+      const def = getTrack(track.type);
+      if (!def) continue;
+      const width = track.width ?? def.width;
+      rings += (def.wideRing ? width : Math.min(width, 26)) + 3;
+    }
+    // Never give the rings more than half of what there is; past that the tree
+    // is too small to read and the annotations have nothing to annotate.
+    if (!rings) return half * BARE;
+    const forRings = Math.min(rings, half * 0.5);
+    return Math.max(half * 0.25, half * BARE - forRings);
+  }
+
   private drawRings(
     ctx: CanvasRenderingContext2D,
     R: number,
@@ -1302,8 +1399,14 @@ export class TreeRenderer {
       const width = track.width ?? def.width;
       // Rings are thinner than linear tracks: they have the whole circumference
       // to work with and depth is the scarce axis here. A track that encodes a
-      // magnitude along the radius says so and keeps its width.
-      const thickness = def.wideRing ? width : Math.min(width, 26);
+      // magnitude along the radius says so and keeps its width — but only as
+      // much of it as there is room for. A 220px layout ring on a 400px radius
+      // is drawn entirely outside the pane, where it can be neither seen nor
+      // hovered.
+      const room = Math.min(this.width, this.height) / 2 - radius - 8;
+      const thickness = def.wideRing
+        ? Math.max(MIN_WIDE_RING, Math.min(width, room))
+        : Math.min(width, 26);
 
       for (let row = 0; row < n; row += step) {
         const a = this.leafAngle(row, n);
@@ -1341,6 +1444,7 @@ export class TreeRenderer {
       });
       radius += thickness + 3;
     }
+    this.lastRingOuter = radius;
     return radius;
   }
 
@@ -1375,7 +1479,7 @@ export class TreeRenderer {
     const W = this.width;
     const H = this.height;
     const { zoom, panX, panY } = this.view;
-    const R = (Math.min(W, H) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+    const R = this.circularRadius() / (lo.maxR || 1);
 
     ctx.save();
     ctx.translate(W / 2 + panX, H / 2 + panY);
@@ -1439,7 +1543,7 @@ export class TreeRenderer {
     // along the tip's own direction from the centre.
     const sel = this.highlight.selection;
     if (sel && sel.size && sel.size <= POINTER_MAX_MARKS) {
-      const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+      const R = this.circularRadius() / (lo.maxR || 1);
       for (const row of sel) {
         const id = t.leaves[row];
         if (id === undefined) continue;
@@ -1572,7 +1676,7 @@ export class TreeRenderer {
     const { zoom, panX, panY, rotation, arc } = this.view;
     const W = this.width;
     const H = this.height;
-    const R = Math.min(W, H) * CIRC_RADIUS_FRACTION;
+    const R = this.circularRadius();
     const n = t.leaves.length || 1;
 
     const wx = (sx - W / 2 - panX) / zoom;
@@ -1663,7 +1767,7 @@ export class TreeRenderer {
     if (!g) return -1;
 
     const { zoom, panX, panY } = this.view;
-    const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+    const R = this.circularRadius() / (lo.maxR || 1);
     const wx = (sx - this.width / 2 - panX) / zoom / R;
     const wy = (sy - this.height / 2 - panY) / zoom / R;
 
@@ -1707,7 +1811,7 @@ export class TreeRenderer {
     if (this.view.mode === "circular") {
       const lo = this.rect;
       if (!lo) return null;
-      const R = Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION;
+      const R = this.circularRadius();
       const n = t.leaves.length || 1;
       const p = rectToPolar(
         this.radialFraction(lo, id),
@@ -1725,7 +1829,7 @@ export class TreeRenderer {
 
     const lo = this.unrooted;
     if (!lo) return null;
-    const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+    const R = this.circularRadius() / (lo.maxR || 1);
     return {
       x: this.width / 2 + this.view.panX + lo.x[id] * R * this.view.zoom,
       y: this.height / 2 + this.view.panY + lo.y[id] * R * this.view.zoom,
@@ -1770,11 +1874,25 @@ export class TreeRenderer {
           if (b < 0 || b >= bands.leaf.length) return null;
           const leaf = bands.leaf[b] >= 0 ? bands.leaf[b] : bands.any[b];
           if (leaf < 0) return null;
-          return { track: hit.track, leafIndex: leaf };
+          return {
+            track: hit.track,
+            leafIndex: leaf,
+            domain: this.domainAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
+          };
         }
-        const leafIndex = this.leafIndexAt(sy);
+        let leafIndex = this.leafIndexAt(sy);
         if (leafIndex < 0) return null;
-        return { track: hit.track, leafIndex };
+        const sample = this.sampled.get(hit.track);
+        if (sample) {
+          // Snap to the row actually drawn; see `sampled`.
+          const k = Math.floor((leafIndex - sample.start) / sample.step);
+          leafIndex = sample.start + k * sample.step;
+        }
+        return {
+          track: hit.track,
+          leafIndex,
+          domain: this.domainAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
+        };
       }
       return null;
     }
@@ -1789,9 +1907,20 @@ export class TreeRenderer {
       for (const hit of this.trackHits) {
         if (hit.mode !== "circular" || hit.r0 === undefined || hit.r1 === undefined) continue;
         if (r < hit.r0 || r > hit.r1) continue;
-        const row = this.leafRowAtAngle(Math.atan2(wy, wx), n);
+        let row = this.leafRowAtAngle(Math.atan2(wy, wx), n);
         if (row < 0) return null;
-        return { track: hit.track, leafIndex: row };
+        const sample = this.sampled.get(hit.track);
+        if (sample) {
+          const k = Math.floor((row - sample.start) / sample.step);
+          row = sample.start + k * sample.step;
+        }
+        return {
+          track: hit.track,
+          leafIndex: row,
+          // On a ring the layout runs outward, so depth into the ring is what
+          // the rectangular layout reads off x.
+          domain: this.domainAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
+        };
       }
       return null;
     }
@@ -1810,7 +1939,7 @@ export class TreeRenderer {
     const lo = this.unrooted;
     if (!t || !lo) return -1;
     const { zoom, panX, panY } = this.view;
-    const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+    const R = this.circularRadius() / (lo.maxR || 1);
     let best = -1;
     let bestD = Infinity;
     for (let i = 0; i < t.leaves.length; i++) {
