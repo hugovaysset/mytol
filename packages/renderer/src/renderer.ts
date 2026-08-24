@@ -47,6 +47,9 @@ const LABEL_MIN_ROW_PX = 7;
 const CIRC_RADIUS_FRACTION = 0.45;
 const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
+/** Residue counts marked on length-scaled tracks. */
+const LENGTH_GUIDES = [500, 1000];
+
 /** Length of the caret that points at a selected tip. */
 const POINTER_LEN = 11;
 /**
@@ -754,7 +757,28 @@ export class TreeRenderer {
       // categories, and it paints blocks on fractional pixel boundaries, so
       // neighbouring blocks antialias together and one category appears in
       // several shades. Aggregating each pixel row instead fixes both.
-      if (rowH < 2) this.drawTrackAggregated(m, rowH, track, colX, w);
+      // The same guides in the rectangular layout, as vertical rules.
+      if (def.wideRing && track.vmax && track.vmax > 0) {
+        ctx.save();
+        ctx.fillStyle = this.style.dimmed;
+        for (const aa of LENGTH_GUIDES) {
+          if (aa >= track.vmax) continue;
+          ctx.fillRect(colX + (aa / track.vmax) * w, 0, 1, this.height);
+        }
+        ctx.restore();
+      }
+
+      if (def.wideRing) {
+        // A bar or a domain layout draws a SHAPE across the column's width, so
+        // a pixel row cannot be reduced to one colour the way a strip can.
+        // Sample instead, one cell standing for the rows it covers.
+        const step = Math.max(1, Math.floor(this.style.lodMinPx / Math.max(rowH, 1e-6)));
+        for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i += step) {
+          const y = this.rowY(m, i) - rowH / 2;
+          def.drawCell(ctx, colX, y, w, Math.max(1, rowH * step), i, track as never);
+        }
+        this.bandLeaf.delete(track);
+      } else if (rowH < 2) this.drawTrackAggregated(m, rowH, track, colX, w);
       else {
         for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i++) {
           const y = this.rowY(m, i) - rowH / 2;
@@ -1277,8 +1301,9 @@ export class TreeRenderer {
       if (!def) continue;
       const width = track.width ?? def.width;
       // Rings are thinner than linear tracks: they have the whole circumference
-      // to work with and depth is the scarce axis here.
-      const thickness = Math.min(width, 26);
+      // to work with and depth is the scarce axis here. A track that encodes a
+      // magnitude along the radius says so and keeps its width.
+      const thickness = def.wideRing ? width : Math.min(width, 26);
 
       for (let row = 0; row < n; row += step) {
         const a = this.leafAngle(row, n);
@@ -1290,6 +1315,22 @@ export class TreeRenderer {
         def.drawCell(ctx, 0, 0, thickness, h, row, track as never);
         ctx.restore();
       }
+      // Length guides, as iToL's protein-domain dataset draws them: circles at
+      // round numbers of residues, so a layout can be read off the ring
+      // without measuring it against the longest protein in the set.
+      if (def.wideRing && track.vmax && track.vmax > 0) {
+        ctx.save();
+        ctx.strokeStyle = this.style.dimmed;
+        ctx.lineWidth = 1;
+        for (const aa of LENGTH_GUIDES) {
+          if (aa >= track.vmax) continue;
+          ctx.beginPath();
+          ctx.arc(0, 0, radius + (aa / track.vmax) * thickness, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       this.trackHits.push({
         track,
         mode: "circular",
