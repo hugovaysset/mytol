@@ -76,6 +76,26 @@ export function spreadColors(n: number): string[] {
   return out;
 }
 
+/**
+ * A stable colour for a category with no palette entry.
+ *
+ * Some columns have more categories than any palette can carry — genus runs to
+ * thousands — and the server caps the domain it sends. Anything past the cap
+ * used to fall back to one flat grey, so most of a genus strip looked like a
+ * single enormous category. Hashing the name instead gives every value its own
+ * colour, the same colour in every session, without shipping a palette of
+ * thousands of entries.
+ */
+export function hashColor(key: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const u = (h >>> 0) / 4294967296;
+  return hslToHex(u * 360, 55 + ((h >>> 8) & 31), 42 + ((h >>> 16) & 23));
+}
+
 function hslToHex(h: number, s: number, l: number): string {
   const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
   const f = (k: number) => {
@@ -221,7 +241,8 @@ registerTrack("colorstrip", {
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const v = track.values?.[leafIndex];
     if (v == null) return;
-    ctx.fillStyle = track.palette?.[String(v)] ?? "#888";
+    const k = String(v);
+    ctx.fillStyle = track.palette?.[k] ?? hashColor(k);
     ctx.fillRect(x, y, w, h);
   },
   legend(track) {

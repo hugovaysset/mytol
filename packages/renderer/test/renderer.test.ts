@@ -14,6 +14,7 @@ import {
   getTrack,
   registeredTrackTypes,
   autoPalette,
+  hashColor,
   heatColor,
   supportColor,
   supportRgb,
@@ -1459,5 +1460,37 @@ describe("hidden-category markers", () => {
     const marks = r.markersForTest();
     expect(marks.length).toBeGreaterThan(0);
     for (const mk of marks) expect(mk.count).toBeGreaterThan(0);
+  });
+});
+
+describe("categories with no palette entry", () => {
+  it("gives each one its own stable colour rather than a shared grey", () => {
+    // Columns like genus run to thousands of values and the server caps the
+    // domain it sends, so a palette can never cover every category.
+    const a = hashColor("Escherichia");
+    const b = hashColor("Salmonella");
+    expect(a).not.toBe(b);
+    expect(hashColor("Escherichia")).toBe(a);
+    expect(a).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
+  it("paints unpalettable categories distinctly on the strip", () => {
+    const { r, calls } = makeRenderer("(A:0.1,B:0.1,C:0.1,D:0.1);", 400, 300);
+    r.setTracks([
+      {
+        type: "colorstrip",
+        label: "genus",
+        visible: true,
+        values: ["Escherichia", "Salmonella", "Vibrio", "Bacillus"],
+        // Only the first is known, as if the domain had been truncated.
+        palette: { Escherichia: "#123456" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
+    calls.rects.length = 0;
+    r.draw();
+    const strip = calls.rects.filter((q) => q.w === 18);
+    const colours = new Set(strip.map((q) => q.color));
+    expect(colours.size).toBe(4);
   });
 });
