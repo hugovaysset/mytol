@@ -1494,3 +1494,134 @@ describe("categories with no palette entry", () => {
     expect(colours.size).toBe(4);
   });
 });
+
+describe("circular picking with a deep outlier", () => {
+  /**
+   * One tip far deeper than the rest, so `fitX` (the framed quantile) and
+   * `maxX` (the deepest tip) are very different numbers. Picking used to divide
+   * by `maxX` while drawing divided by `fitX`.
+   */
+  function outlierTree(): string {
+    // Sixteen ordinary tips plus one enormously deep one. Enough tips that the
+    // 90th percentile lands on an ordinary depth — with only a handful the
+    // quantile IS the outlier and every node collapses onto the centre, which
+    // makes the geometry ambiguous rather than wrong.
+    let nodes = Array.from({ length: 16 }, (_, i) => `L${i}:0.1`);
+    let depth = 0;
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(`(${nodes[i]},${nodes[i + 1]})n${depth}_${i}:0.1`);
+      }
+      nodes = next;
+      depth++;
+    }
+    return `(${nodes[0]},(E:0.1,F:40.0)deep:0.1)r;`;
+  }
+
+  const OUTLIER = outlierTree();
+
+  function circular(w = 600, h = 600) {
+    const { r, tree } = makeRenderer(OUTLIER, w, h);
+    r.setView({ mode: "circular", fitQuantile: 0.9 });
+    r.draw();
+    return { r, tree };
+  }
+
+  it("picks the node drawn under the cursor, not one scaled by a different depth", () => {
+    const { r, tree } = circular();
+    for (let id = 0; id < tree.count; id++) {
+      if (id === tree.root) continue;
+      const p = r.screenPosition(id);
+      if (!p) continue;
+      const hit = r.pick(p.x, p.y);
+      expect(hit).toBeGreaterThanOrEqual(0);
+      // A node's own point is a genuine tie: a child's connecting arc begins
+      // exactly there, and so does the far end of its own radial run. So the
+      // requirement is that the pick lies on the same lineage — which is what
+      // the bug broke, returning clades with no relation to the point at all.
+      const onLineage =
+        (tree.L[hit] <= tree.L[id] && tree.R[hit] >= tree.R[id]) ||
+        (tree.L[hit] >= tree.L[id] && tree.R[hit] <= tree.R[id]);
+      expect(onLineage).toBe(true);
+    }
+  });
+
+  it("finds an inner branch when the cursor is on it, not a distant small clade", () => {
+    const { r, tree } = circular();
+    // An inner node partway out; hover the middle of its own branch and check
+    // the pick stays in its lineage.
+    const c = tree.nameToNode.get("n2_0");
+    expect(c).toBeDefined();
+    const pc = r.screenPosition(c!)!;
+    const pp = r.screenPosition(tree.parent[c!])!;
+    const mid = { x: (pc.x + pp.x) / 2, y: (pc.y + pp.y) / 2 };
+    const hit = r.pick(mid.x, mid.y);
+    expect(hit).toBeGreaterThanOrEqual(0);
+    // Whatever it picks must contain, or be contained by, the branch hovered —
+    // the bug returned a clade with no relation to it at all.
+    const related =
+      (tree.L[hit] <= tree.L[c!] && tree.R[hit] >= tree.R[c!]) ||
+      (tree.L[hit] >= tree.L[c!] && tree.R[hit] <= tree.R[c!]);
+    expect(related).toBe(true);
+  });
+
+  it("agrees with rectangular picking about which node is where", () => {
+    // The same assertion in rect mode, so a future divergence shows up as a
+    // difference between the modes rather than as silence.
+    const { r, tree } = makeRenderer(OUTLIER, 600, 600);
+    r.setView({ mode: "rect", fitQuantile: 0.9 });
+    r.draw();
+    for (let id = 0; id < tree.count; id++) {
+      const p = r.screenPosition(id);
+      if (!p) continue;
+      const hit = r.pick(p.x, p.y);
+      const onLineage =
+        (tree.L[hit] <= tree.L[id] && tree.R[hit] >= tree.R[id]) ||
+        (tree.L[hit] >= tree.L[id] && tree.R[hit] <= tree.R[id]);
+      expect(onLineage).toBe(true);
+    }
+  });
+});
+
+describe("circular angle inverse", () => {
+  /**
+   * Every tip's own screen position must pick that tip's row back out.
+   *
+   * The failure this guards against is subtle and total: with a 350-degree arc
+   * `atan2`'s principal value sits a full turn away from the angle that drew
+   * the tip, so rows past the halfway point came back off by one and picking
+   * climbed the wrong leaf's ancestry.
+   */
+  function rowsRoundTrip(n: number, rotation: number, arc: number) {
+    const tips = Array.from({ length: n }, (_, i) => `L${i}:0.1`);
+    const { r, tree } = makeRenderer(`(${tips.join(",")});`, 600, 600);
+    r.setView({ mode: "circular", rotation, arc });
+    r.draw();
+    let wrong = 0;
+    for (let i = 0; i < n; i++) {
+      const p = r.screenPosition(tree.leaves[i]);
+      if (!p) continue;
+      if (r.leafRowAtPoint(p.x, p.y) !== i) wrong++;
+    }
+    return wrong;
+  }
+
+  it("recovers every row across the default arc", () => {
+    expect(rowsRoundTrip(64, 0, 350)).toBe(0);
+  });
+
+  it("recovers every row on a full circle", () => {
+    expect(rowsRoundTrip(64, 0, 360)).toBe(0);
+  });
+
+  it("recovers every row on a half circle", () => {
+    expect(rowsRoundTrip(64, 0, 180)).toBe(0);
+  });
+
+  it("recovers every row however the tree is rotated", () => {
+    for (const rot of [0, 45, 90, 179, 180, 270, 359]) {
+      expect(rowsRoundTrip(48, rot, 350)).toBe(0);
+    }
+  });
+});
