@@ -38,7 +38,7 @@ import {
   defaultStyle,
   emptyHighlight,
 } from "./types";
-import { getTrack, initTrack, heatValueColor } from "./registry";
+import { getTrack, initTrack, heatValueColor, hashColor } from "./registry";
 
 const PADDING = 40;
 const LABEL_RESERVE_PX = 150;
@@ -826,7 +826,7 @@ export class TreeRenderer {
       if (i < 0) continue;
       const color = numeric
         ? heatValueColor(sum![b] / Math.max(1, nSum![b]), track)
-        : (track.palette?.[String(values![i])] ?? "#888");
+        : (track.palette?.[String(values![i])] ?? hashColor(String(values![i])));
       if (!color) continue;
       ctx.fillStyle = color;
       // Integer coordinates: a fractional rect is antialiased, which is how one
@@ -887,7 +887,7 @@ export class TreeRenderer {
       }
     }
     for (const e of merged.values()) {
-      const color = track.palette?.[e.cat] ?? "#888";
+      const color = track.palette?.[e.cat] ?? hashColor(e.cat);
       this.trackMarkers.push({
         track,
         category: e.cat,
