@@ -24,10 +24,19 @@ import {
 export interface HoverTarget {
   nodeId: number;
   /** Set when the pointer is over an annotation track rather than the tree. */
-  track?: { label: string; type: string; leafIndex: number; value: unknown };
+  track?: {
+    label: string;
+    type: string;
+    leafIndex: number;
+    value: unknown;
+    /** Set when the pointer is over a marker for a category the zoom hides. */
+    hiddenCategory?: string;
+    hiddenCount?: number;
+  };
   /** Leaf row under the pointer, when there is one. */
   leafIndex?: number;
 }
+import type { TrackHover } from "@mytol/renderer";
 import {
   applyClick,
   applyBoxSelect,
@@ -41,7 +50,7 @@ import {
 export interface PhyloTreeHandle {
   /** Node under a screen point, or -1. */
   pick(x: number, y: number): number;
-  trackAt(x: number, y: number): { track: TrackInstance; leafIndex: number } | null;
+  trackAt(x: number, y: number): TrackHover | null;
   screenPosition(nodeId: number): { x: number; y: number } | null;
   fit(): void;
   /** Centre the view on a leaf and zoom in enough to read it. */
@@ -264,9 +273,13 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
             type: overTrack.track.type,
             leafIndex: overTrack.leafIndex,
             value:
-              overTrack.track.values?.[overTrack.leafIndex] ??
-              overTrack.track.numeric?.[overTrack.leafIndex] ??
-              null,
+              overTrack.leafIndex < 0
+                ? null
+                : (overTrack.track.values?.[overTrack.leafIndex] ??
+                  overTrack.track.numeric?.[overTrack.leafIndex] ??
+                  null),
+            hiddenCategory: overTrack.hiddenCategory,
+            hiddenCount: overTrack.hiddenCount,
           },
         });
         return;

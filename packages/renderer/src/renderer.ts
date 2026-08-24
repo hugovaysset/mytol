@@ -38,7 +38,7 @@ import {
   defaultStyle,
   emptyHighlight,
 } from "./types";
-import { getTrack, initTrack } from "./registry";
+import { getTrack, initTrack, heatValueColor } from "./registry";
 
 const PADDING = 40;
 const LABEL_RESERVE_PX = 150;
@@ -58,6 +58,17 @@ export interface RectMetrics {
   trackWidth: number;
   visibleLeafStart: number;
   visibleLeafEnd: number;
+}
+
+/** What the pointer is over, inside an annotation track. */
+export interface TrackHover {
+  track: TrackInstance;
+  /** Leaf whose value is painted here, or -1 when over a hidden-category marker. */
+  leafIndex: number;
+  /** Set only for a marker: the category the current zoom cannot draw. */
+  hiddenCategory?: string;
+  /** How many leaves in this stretch carry it. */
+  hiddenCount?: number;
 }
 
 export class TreeRenderer {
@@ -98,6 +109,36 @@ export class TreeRenderer {
   private width = 0;
   private height = 0;
   private lastMetrics: RectMetrics | null = null;
+  /** Clades folded by LOD in the last rect draw, outermost only. */
+  private lodCollapsed: number[] = [];
+  /**
+   * Rarity order per categorical track, cached: rarer categories win the
+   * contest for a pixel row, so a small category is not erased by a large one.
+   */
+  private catRank = new WeakMap<TrackInstance, Map<string, number>>();
+  /**
+   * Which leaf actually supplied the colour of each pixel row of each track,
+   * so hovering an aggregated strip reports the value that is on screen.
+   */
+  private bandLeaf = new Map<TrackInstance, {
+    top: number;
+    leaf: Int32Array;
+    /** Any leaf on this row, even one with no value, so the tooltip can name it. */
+    any: Int32Array;
+  }>();
+  /**
+   * Categories present in a stretch of a track but not drawn there, because
+   * the rows they sit on are thinner than a pixel.
+   */
+  private trackMarkers: Array<{
+    track: TrackInstance;
+    category: string;
+    color: string;
+    count: number;
+    x0: number;
+    x1: number;
+    y: number;
+  }> = [];
 
   constructor(canvas: HTMLCanvasElement, opts: RendererOptions = {}) {
     this.canvas = canvas;
@@ -351,6 +392,7 @@ export class TreeRenderer {
     }
 
     this.trackHits = [];
+    this.trackMarkers = [];
 
     // skipNode: 0 draw, 1 collapsed triangle, 2 hidden inside a collapse
     const skip = this.computeSkip();
@@ -465,15 +507,48 @@ export class TreeRenderer {
     }
 
     // -- branches ------------------------------------------------------------
+    //
+    // Fitting the view to a quantile of the tips leaves the deepest few running
+    // past the fitted edge — that is the point of it, and the alternative is
+    // letting one long branch set the scale for the whole tree. But those
+    // overhanging branches were drawn straight through the annotation columns,
+    // which made the strips unreadable and the hit test ambiguous. When there
+    // are tracks, the tree is clipped where they begin.
+    const clipAtTracks = this.tracks.some((tr) => tr.visible) && m.trackWidth > 0;
+    if (clipAtTracks) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, Math.max(0, m.trackStartX - TRACK_GAP / 2), this.height);
+      ctx.clip();
+    }
+
     const lw = s.branchWidth;
+    // Clades folded away by level of detail, kept so the annotation tracks can
+    // say what is hiding inside them.
+    const collapsed: number[] = [];
+    this.lodCollapsed = collapsed;
     for (let id = 0; id < t.count; id++) {
       if (skip[id] === 2) continue;
       if (t.R[id] <= m.visibleLeafStart || t.L[id] >= m.visibleLeafEnd) continue;
 
-      // Level of detail: drop clades too short to register on screen.
+      // Level of detail.
+      //
+      // A clade too short to draw in full is drawn as a WEDGE spanning the
+      // depth it actually reaches, not dropped. Dropping it — the obvious
+      // reading of "too small to see" — makes the tree stop well short of its
+      // own tips, because the surviving nodes are all backbone and the deep
+      // structure lives in exactly the clades being discarded. The tree then
+      // looks shifted left with a gap before the annotation tracks.
       if (id !== t.root && skip[id] === 0 && s.lodMinPx > 0) {
         const cladePx = (t.R[id] - t.L[id]) * rowH;
-        if (cladePx < s.lodMinPx) continue;
+        if (cladePx < s.lodMinPx) {
+          const parent = t.parent[id];
+          // Only the outermost such clade draws; its descendants are inside it.
+          if (parent !== -1 && (t.R[parent] - t.L[parent]) * rowH < s.lodMinPx) continue;
+          this.drawWedge(m, id, rowH, lw);
+          collapsed.push(id);
+          continue;
+        }
       }
 
       const p = this.screenOf(m, id);
@@ -515,6 +590,9 @@ export class TreeRenderer {
       }
     }
 
+    // Selection marks sit right against the tracks, so the clip lifts first.
+    if (clipAtTracks) ctx.restore();
+
     // -- selection marks -----------------------------------------------------
     const sel = this.highlight.selection;
     if (sel && sel.size) {
@@ -531,6 +609,55 @@ export class TreeRenderer {
     this.drawSupport(m, rowH, skip);
   }
 
+  /**
+   * A clade drawn as a filled wedge, from its own node out to its deepest tip.
+   *
+   * The shape carries two honest facts a dropped clade carries none of: where
+   * the lineage reaches, and roughly how many tips are inside it (the wedge's
+   * height is its row span).
+   */
+  private drawWedge(m: RectMetrics, id: number, rowH: number, lw: number): void {
+    const t = this.tree as Tree;
+    const lo = this.rect as RectLayout;
+    const ctx = this.ctx;
+
+    const p = this.screenOf(m, id);
+    const tipX =
+      this.width / 2 + this.view.panX + m.originX + m.sx * lo.subtreeMaxX[id];
+    const yTop = this.rowY(m, t.L[id]) - rowH / 2;
+    const yBot = this.rowY(m, t.R[id] - 1) + rowH / 2;
+    const h = Math.max(lw, yBot - yTop);
+
+    ctx.beginPath();
+    ctx.moveTo(p.x, (yTop + yBot) / 2);
+    ctx.lineTo(tipX, yTop - (h < 2 ? 0.6 : 0));
+    ctx.lineTo(tipX, yBot + (h < 2 ? 0.6 : 0));
+    ctx.closePath();
+    ctx.fillStyle = this.branchColor(id);
+    ctx.fill();
+  }
+
+  /** Test seam: the rect metrics of the current view. */
+  metricsForTest(): RectMetrics {
+    return this.metrics() as RectMetrics;
+  }
+
+  /** Test seam: the hidden-category markers from the last draw. */
+  markersForTest(): Array<{ category: string; count: number; x0: number; x1: number; y: number }> {
+    return this.trackMarkers.map((mk) => ({
+      category: mk.category,
+      count: mk.count,
+      x0: mk.x0,
+      x1: mk.x1,
+      y: mk.y,
+    }));
+  }
+
+  /** Clades the last draw folded away, for a host that wants to annotate them. */
+  collapsedClades(): number[] {
+    return this.lodCollapsed;
+  }
+
   private rowY(m: RectMetrics, leafIndex: number): number {
     const wy = m.originY + m.sy * leafIndex;
     return this.height / 2 + this.view.panY + wy * this.view.vZoom;
@@ -540,36 +667,257 @@ export class TreeRenderer {
     if (!this.tracks.length) return;
     const ctx = this.ctx;
 
-    // LOD: when rows are sub-pixel, sample every Nth leaf instead of drawing
-    // every one. This is what keeps track drawing O(screen height).
-    const step = Math.max(1, Math.floor(this.style.lodMinPx / Math.max(rowH, 1e-6)));
-
     let colX = m.trackStartX;
+    let shown = 0;
+    // Names are far wider than the ~18px columns they head, so headers are
+    // staggered down several rows and each is allowed to run over its
+    // neighbours' columns — whose own names are on different rows.
+    const nVisible = this.tracks.filter((tr) => tr.visible).length;
+    const headerRows = Math.min(3, Math.max(1, nVisible));
     for (const track of this.tracks) {
       if (!track.visible) continue;
       const def = getTrack(track.type);
       if (!def) continue;
       const w = track.width ?? def.width;
 
-      // header
+      // Header. Columns are ~18px wide and names are not, so headers alternate
+      // between two rows and each is allowed to run over its neighbour's
+      // column — which is empty, because that neighbour's name is on the other
+      // row. Clipping each name to its own 18px was legible for one track and
+      // unreadable for two.
       if (this.style.showLeafLabels) {
+        const row = shown % headerRows;
         ctx.fillStyle = this.style.textMuted;
         ctx.font = `10px ${this.style.fontFamily}`;
         ctx.textBaseline = "alphabetic";
         ctx.save();
         ctx.beginPath();
-        ctx.rect(colX, 0, w + TRACK_GAP, 14);
+        ctx.rect(colX, row * 11, headerRows * (w + TRACK_GAP), 12);
         ctx.clip();
-        ctx.fillText(track.label, colX, 11);
+        ctx.fillText(track.label, colX, 10 + row * 11);
         ctx.restore();
       }
 
-      for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i += step) {
-        const y = this.rowY(m, i) - rowH / 2;
-        def.drawCell(ctx, colX, y, w, Math.max(1, rowH * step), i, track as never);
+      // Below about two pixels a row cannot be drawn on its own. Sampling every
+      // Nth leaf — the obvious thing — is wrong twice over: it drops whole
+      // categories, and it paints blocks on fractional pixel boundaries, so
+      // neighbouring blocks antialias together and one category appears in
+      // several shades. Aggregating each pixel row instead fixes both.
+      if (rowH < 2) this.drawTrackAggregated(m, rowH, track, colX, w);
+      else {
+        for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i++) {
+          const y = this.rowY(m, i) - rowH / 2;
+          def.drawCell(ctx, colX, y, w, rowH, i, track as never);
+        }
+        this.bandLeaf.delete(track);
       }
+
       this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
       colX += w + TRACK_GAP;
+      shown++;
+    }
+
+    this.drawTrackMarkers();
+  }
+
+  /** Rarity order for a categorical track: index 0 is the rarest category. */
+  private rarityRank(track: TrackInstance): Map<string, number> {
+    const cached = this.catRank.get(track);
+    if (cached) return cached;
+    const counts = new Map<string, number>();
+    for (const v of track.values ?? []) {
+      if (v == null) continue;
+      const k = String(v);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    const rank = new Map<string, number>();
+    Array.from(counts.entries())
+      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      .forEach(([k], i) => rank.set(k, i));
+    this.catRank.set(track, rank);
+    return rank;
+  }
+
+  /**
+   * One pixel row at a time, when leaf rows are thinner than a pixel.
+   *
+   * Each row is won by the RAREST category it contains. Letting the most common
+   * one win would be the natural choice and is the wrong one here: the whole
+   * point of the strip at this zoom is to show where the unusual annotations
+   * are, and they are exactly the ones a majority vote erases.
+   *
+   * Everything a row could not show is remembered, and surfaces as a marker.
+   */
+  private drawTrackAggregated(
+    m: RectMetrics,
+    rowH: number,
+    track: TrackInstance,
+    colX: number,
+    w: number,
+  ): void {
+    const ctx = this.ctx;
+    const numeric = track.numeric;
+    const values = track.values;
+    if (!numeric && !values) return;
+
+    const top = Math.floor(this.rowY(m, m.visibleLeafStart) - rowH / 2);
+    const nBands = Math.max(1, Math.ceil(this.height) - top + 2);
+    const best = new Int32Array(nBands).fill(-1);
+    const bestRank = new Float64Array(nBands).fill(Infinity);
+    const hidden: Array<Map<string, number> | null> = new Array(nBands).fill(null);
+    const rank = values ? this.rarityRank(track) : null;
+    // Continuous tracks average instead of competing: a pixel row stands for
+    // dozens of leaves, and its mean is the honest summary of them. Taking the
+    // maximum — the natural analogue of "rarest wins" — paints the whole column
+    // its top colour as soon as any row contains one high value.
+    const sum = numeric ? new Float64Array(nBands) : null;
+    const nSum = numeric ? new Int32Array(nBands) : null;
+    // A row whose leaves all lack a value still belongs to this track. Without
+    // this the hit test falls through to the tree behind it and the tooltip
+    // answers with the leaf's own details instead of the dataset's.
+    const anyLeaf = new Int32Array(nBands).fill(-1);
+
+    for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i++) {
+      const band = Math.floor(this.rowY(m, i)) - top;
+      if (band < 0 || band >= nBands) continue;
+      if (anyLeaf[band] < 0) anyLeaf[band] = i;
+
+      let score: number;
+      if (numeric) {
+        const v = numeric[i];
+        if (Number.isNaN(v)) continue;
+        sum![band] += v;
+        nSum![band]++;
+        // Any leaf will do as the row's representative; the colour comes from
+        // the mean, and the first one gives the tooltip something to name.
+        score = best[band] >= 0 ? Infinity : 0;
+      } else {
+        const v = values![i];
+        if (v == null) continue;
+        score = rank!.get(String(v)) ?? Infinity;
+      }
+
+      if (score < bestRank[band]) {
+        // The category being displaced still happened here.
+        if (values && best[band] >= 0) {
+          const prev = values[best[band]];
+          if (prev != null) {
+            let h = hidden[band];
+            if (!h) hidden[band] = h = new Map();
+            const k = String(prev);
+            h.set(k, (h.get(k) ?? 0) + 1);
+          }
+        }
+        bestRank[band] = score;
+        best[band] = i;
+      } else if (values) {
+        const v = values[i];
+        if (v != null && String(v) !== String(values[best[band]])) {
+          let h = hidden[band];
+          if (!h) hidden[band] = h = new Map();
+          const k = String(v);
+          h.set(k, (h.get(k) ?? 0) + 1);
+        }
+      }
+    }
+
+    for (let b = 0; b < nBands; b++) {
+      const i = best[b];
+      if (i < 0) continue;
+      const color = numeric
+        ? heatValueColor(sum![b] / Math.max(1, nSum![b]), track)
+        : (track.palette?.[String(values![i])] ?? "#888");
+      if (!color) continue;
+      ctx.fillStyle = color;
+      // Integer coordinates: a fractional rect is antialiased, which is how one
+      // category ended up looking like three.
+      ctx.fillRect(colX, top + b, w, 1);
+    }
+
+    this.bandLeaf.set(track, { top, leaf: best, any: anyLeaf });
+
+    if (!values) return;
+    // Markers are merged into coarse bands so they stay legible; a marker per
+    // pixel row would be a second, noisier copy of the strip.
+    const SPACING = 8;
+    // What the strip manages to show, slot by slot.
+    //
+    // A marker means "this category is here and you cannot see it around here",
+    // which is the thing worth interrupting the user about. Two rules were
+    // tried and are both wrong. Marking anything displaced from its own pixel
+    // row puts a caret beside nearly every row: the rarest category wins each
+    // row, so whatever it displaces is by definition commoner and drawn plainly
+    // a little further down. Requiring a category to be missing from the ENTIRE
+    // strip is the opposite failure — one leaf winning one row at the very edge
+    // of the canvas silently cancels every marker for it.
+    //
+    // So: look in a neighbourhood. NEARBY slots either side is close enough
+    // that the eye would have found the colour, and narrow enough that a
+    // category genuinely absent from a region still gets flagged.
+    const NEARBY = 2;
+    const drawnInSlot = new Map<number, Set<string>>();
+    for (let b = 0; b < nBands; b++) {
+      const i = best[b];
+      if (i < 0) continue;
+      const v = values[i];
+      if (v == null) continue;
+      const slot = Math.floor(b / SPACING);
+      let set = drawnInSlot.get(slot);
+      if (!set) drawnInSlot.set(slot, (set = new Set()));
+      set.add(String(v));
+    }
+    const visibleNear = (cat: string, slot: number): boolean => {
+      for (let s2 = slot - NEARBY; s2 <= slot + NEARBY; s2++) {
+        if (drawnInSlot.get(s2)?.has(cat)) return true;
+      }
+      return false;
+    };
+
+    const merged = new Map<string, { cat: string; count: number; y: number }>();
+    for (let b = 0; b < nBands; b++) {
+      const h = hidden[b];
+      if (!h) continue;
+      const slot = Math.floor(b / SPACING);
+      for (const [cat, n] of h) {
+        if (visibleNear(cat, slot)) continue;
+        const key = `${cat}@${slot}`;
+        const e = merged.get(key);
+        if (e) e.count += n;
+        else merged.set(key, { cat, count: n, y: top + slot * SPACING + SPACING / 2 });
+      }
+    }
+    for (const e of merged.values()) {
+      const color = track.palette?.[e.cat] ?? "#888";
+      this.trackMarkers.push({
+        track,
+        category: e.cat,
+        color,
+        count: e.count,
+        x0: colX + w + 1,
+        x1: colX + w + TRACK_GAP,
+        y: e.y,
+      });
+    }
+  }
+
+  /**
+   * A caret per hidden category, in the gap to the right of its strip.
+   *
+   * It points back at the strip it belongs to, and says only "something is in
+   * here that the current zoom cannot draw" — the count is in the tooltip.
+   */
+  private drawTrackMarkers(): void {
+    if (!this.trackMarkers.length) return;
+    const ctx = this.ctx;
+    for (const mk of this.trackMarkers) {
+      const h = 3;
+      ctx.beginPath();
+      ctx.moveTo(mk.x0, mk.y);
+      ctx.lineTo(mk.x1, mk.y - h);
+      ctx.lineTo(mk.x1, mk.y + h);
+      ctx.closePath();
+      ctx.fillStyle = mk.color;
+      ctx.fill();
     }
   }
 
@@ -1149,16 +1497,41 @@ export class TreeRenderer {
    * the tree, so a plain node pick never reaches them and the two hit tests
    * have to be separate.
    */
-  trackAt(sx: number, sy: number): { track: TrackInstance; leafIndex: number } | null {
+  trackAt(sx: number, sy: number): TrackHover | null {
     const t = this.tree;
     if (!t || !this.trackHits.length) return null;
 
     if (this.view.mode === "rect") {
-      const leafIndex = this.leafIndexAt(sy);
-      if (leafIndex < 0) return null;
+      // Markers sit in the gap beside their strip and are only a few pixels
+      // across, so they are tested first and with a little slack.
+      for (const mk of this.trackMarkers) {
+        if (sx >= mk.x0 - 2 && sx <= mk.x1 + 2 && Math.abs(sy - mk.y) <= 5) {
+          return {
+            track: mk.track,
+            leafIndex: -1,
+            hiddenCategory: mk.category,
+            hiddenCount: mk.count,
+          };
+        }
+      }
       for (const hit of this.trackHits) {
         if (hit.mode !== "rect") continue;
-        if (sx >= hit.x0 && sx <= hit.x1) return { track: hit.track, leafIndex };
+        if (sx < hit.x0 || sx > hit.x1) continue;
+        // When the strip is aggregated, report the leaf whose value is actually
+        // painted on this pixel row rather than whichever leaf the row maps to
+        // arithmetically — otherwise the tooltip names a different value from
+        // the colour under the cursor.
+        const bands = this.bandLeaf.get(hit.track);
+        if (bands) {
+          const b = Math.floor(sy) - bands.top;
+          if (b < 0 || b >= bands.leaf.length) return null;
+          const leaf = bands.leaf[b] >= 0 ? bands.leaf[b] : bands.any[b];
+          if (leaf < 0) return null;
+          return { track: hit.track, leafIndex: leaf };
+        }
+        const leafIndex = this.leafIndexAt(sy);
+        if (leafIndex < 0) return null;
+        return { track: hit.track, leafIndex };
       }
       return null;
     }
