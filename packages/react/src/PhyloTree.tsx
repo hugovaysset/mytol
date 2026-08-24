@@ -57,6 +57,8 @@ export interface PhyloTreeHandle {
   fit(): void;
   /** Centre the view on a leaf and zoom in enough to read it. */
   focusLeaf(leafIndex: number): void;
+  /** Frame a run of leaf rows, so the whole clade fills the view. */
+  focusRows(from: number, to: number): void;
   redraw(): void;
   renderer(): TreeRenderer | null;
 }
@@ -408,6 +410,32 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
           const h = host ? host.clientHeight : 0;
           r.setView({ panY: r.getView().panY + (h / 2 - pos.y) });
         }
+        onViewChange?.(r.getView());
+      },
+      /**
+       * Frame rows [from, to) — enough zoom for the clade to fill the pane,
+       * and no more.
+       *
+       * Distinct from focusLeaf, which always zooms in hard because a single
+       * tip is a point. A clade has an extent, and zooming past it hides the
+       * very thing being pointed at.
+       */
+      focusRows: (from, to) => {
+        const r = rendererRef.current;
+        const t = treeRef.current;
+        if (!r || !t) return;
+        const rows = Math.max(1, to - from);
+        const host = hostRef.current;
+        const h = host ? host.clientHeight : 0;
+        if (!h) return;
+        // vZoom 1 fits every leaf in the pane, so filling it with `rows` of
+        // them is that ratio — held back a little so the clade is not flush
+        // against the edges, and never below 1, which would zoom OUT.
+        const target = Math.max(1, (t.leaves.length / rows) * 0.85);
+        r.setView({ vZoom: target, panY: 0 });
+        const mid = Math.floor((from + to) / 2);
+        const pos = r.screenPosition(t.leaves[Math.min(mid, t.leaves.length - 1)]);
+        if (pos) r.setView({ panY: r.getView().panY + (h / 2 - pos.y) });
         onViewChange?.(r.getView());
       },
       redraw: () => rendererRef.current?.requestDraw(),
