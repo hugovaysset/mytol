@@ -47,6 +47,13 @@ const LABEL_MIN_ROW_PX = 7;
 const CIRC_RADIUS_FRACTION = 0.45;
 const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
+/** Length of the caret that points at a selected tip. */
+const POINTER_LEN = 11;
+/**
+ * Beyond a handful, a caret per tip stops being a pointer and becomes a second
+ * copy of the selection; the highlight band already reads at that size.
+ */
+const POINTER_MAX_MARKS = 8;
 
 /** Where a leaf's row sits on screen, used for tracks, labels and hit-testing. */
 export interface RectMetrics {
@@ -612,6 +619,28 @@ export class TreeRenderer {
     }
 
     this.drawTracks(m, rowH);
+
+    // A caret for each selected tip, once the selection is small enough that
+    // pointing at them individually means something. At tens of thousands of
+    // tips the tick above is a fraction of a pixel and impossible to find.
+    if (sel && sel.size && sel.size <= POINTER_MAX_MARKS) {
+      // Beside the tracks, but never past the edge of the canvas: with no
+      // tracks the column sits at the very margin, where a caret is present
+      // but unfindable.
+      const x = Math.min(m.trackStartX + m.trackWidth + 2, this.width - POINTER_LEN - 3);
+      for (const leafIdx of sel) {
+        if (leafIdx < m.visibleLeafStart || leafIdx >= m.visibleLeafEnd) continue;
+        const y = this.rowY(m, leafIdx);
+        // A guide along the row. The caret alone says "one of the tips out
+        // here"; at forty thousand rows the line is what says WHICH.
+        ctx.fillStyle = s.selected;
+        ctx.globalAlpha = 0.35;
+        ctx.fillRect(0, y - 0.5, x, 1);
+        ctx.globalAlpha = 1;
+        this.drawPointerCaret(x, y, s.selected);
+      }
+    }
+
     this.drawLeafLabels(m, rowH);
     this.drawSupport(m, rowH, skip);
   }
@@ -923,6 +952,45 @@ export class TreeRenderer {
   }
 
   /**
+   * A caret pointing at a row, in the selection colour.
+   *
+   * Same shape as the hidden-category markers, deliberately: the tree already
+   * uses that arrow to mean "the thing you are looking for is on this row",
+   * and a selected protein is the same statement. Larger, because it answers a
+   * question the user just asked rather than one they might.
+   *
+   * The apex is the pointing end and sits at (apexX, apexY); the body extends
+   * away from it along `angle`. So the caller places the apex where it wants
+   * the arrow to POINT — against the row in a rectangular layout, against the
+   * tip in a radial one — and the arrow grows outward from there.
+   */
+  private drawPointerCaret(
+    apexX: number,
+    apexY: number,
+    color: string,
+    angle = 0,
+  ): void {
+    const ctx = this.ctx;
+    const LEN = POINTER_LEN;
+    const HALF = 6;
+    ctx.save();
+    ctx.translate(apexX, apexY);
+    if (angle) ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(LEN, -HALF);
+    ctx.lineTo(LEN, HALF);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    // A thin light edge so the caret reads against a dark branch or a strip.
+    ctx.strokeStyle = this.style.background;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
    * A caret per hidden category, in the gap to the right of its strip.
    *
    * It points back at the strip it belongs to, and says only "something is in
@@ -1086,6 +1154,17 @@ export class TreeRenderer {
 
     // -- annotation rings ------------------------------------------------------
     const ringOuter = this.drawRings(ctx, R, n, halfStep, arcPerLeaf);
+
+    // Selected tips get a caret outside the rings, pointing back in along the
+    // tip's own direction — the radial equivalent of the rectangular marker.
+    if (sel && sel.size && sel.size <= POINTER_MAX_MARKS) {
+      const rr = Math.max(ringOuter, R) + 4;
+      for (const row of sel) {
+        if (row < 0 || row >= n) continue;
+        const a = this.leafAngle(row, n);
+        this.drawPointerCaret(rr * Math.cos(a), rr * Math.sin(a), s.selected, a);
+      }
+    }
 
     // -- leaf labels around the rim -------------------------------------------
     // Fitting labels around a circle is the main reason to use this layout, so
@@ -1268,6 +1347,26 @@ export class TreeRenderer {
         }
         this.trackHits.push({ track, mode: "unrooted", x0: 0, x1: 0 });
         ring++;
+      }
+    }
+
+    // Selected tips get the same caret as in the other layouts, pointing back
+    // along the tip's own direction from the centre.
+    const sel = this.highlight.selection;
+    if (sel && sel.size && sel.size <= POINTER_MAX_MARKS) {
+      const R = (Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION) / (lo.maxR || 1);
+      for (const row of sel) {
+        const id = t.leaves[row];
+        if (id === undefined) continue;
+        const x = lo.x[id] * R;
+        const y = lo.y[id] * R;
+        const a = Math.atan2(y, x);
+        this.drawPointerCaret(
+          x + 4 * Math.cos(a),
+          y + 4 * Math.sin(a),
+          this.style.selected,
+          a,
+        );
       }
     }
 
