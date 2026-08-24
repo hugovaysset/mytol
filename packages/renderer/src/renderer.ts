@@ -637,6 +637,16 @@ export class TreeRenderer {
     ctx.fill();
   }
 
+  /** Which leaf row a screen point falls on in circular mode, by angle alone. */
+  leafRowAtPoint(sx: number, sy: number): number {
+    const t = this.tree;
+    if (!t) return -1;
+    const { zoom, panX, panY } = this.view;
+    const wx = (sx - this.width / 2 - panX) / zoom;
+    const wy = (sy - this.height / 2 - panY) / zoom;
+    return this.leafRowAtAngle(Math.atan2(wy, wx), t.leaves.length || 1);
+  }
+
   /** Test seam: the rect metrics of the current view. */
   metricsForTest(): RectMetrics {
     return this.metrics() as RectMetrics;
@@ -987,7 +997,7 @@ export class TreeRenderer {
 
     const pt = (id: number) =>
       rectToPolar(
-        lo.fitX > 0 ? Math.min(1, lo.x[id] / lo.fitX) : 0,
+        this.radialFraction(lo, id),
         lo.y[id],
         n,
         R,
@@ -1318,6 +1328,45 @@ export class TreeRenderer {
     return bestD <= tol ? best : -1;
   }
 
+  /**
+   * How far out a node sits, as a fraction of the drawn radius.
+   *
+   * The circular layout borrows the rectangular layout's depths and scales them
+   * by `fitX` — the quantile the view frames on — not by `maxX`. Drawing and
+   * picking each worked this out for themselves and drifted apart: picking
+   * divided by `maxX`, so with one deep outlier every node it tested sat far
+   * closer to the centre than the node actually drawn there, and hovering a
+   * long branch near the middle matched some unrelated small clade instead.
+   * Both go through here now.
+   */
+  private radialFraction(lo: RectLayout, id: number): number {
+    return lo.fitX > 0 ? Math.min(1, lo.x[id] / lo.fitX) : 0;
+  }
+
+  /**
+   * Which leaf row a screen angle falls on — the inverse of `rectToPolar`.
+   *
+   * The wrap is the whole difficulty. `atan2` reports an angle in (-pi, pi],
+   * but a tip's angle runs `start - ((row + 0.5) / n) * arc`, which for the
+   * default 350-degree arc leaves the principal value a full TURN away from
+   * the value that generated it. Normalising the row fraction into [0, 1] --
+   * the obvious repair, and what this did -- shifts by one arc rather than one
+   * turn, so every row past the halfway point came back off by one and the
+   * pick walked up the wrong leaf's ancestry entirely.
+   *
+   * Returns -1 for an angle in the gap the arc leaves open.
+   */
+  private leafRowAtAngle(angle: number, n: number): number {
+    const start = (this.view.rotation * Math.PI) / 180;
+    const span = (this.view.arc * Math.PI) / 180;
+    const TURN = Math.PI * 2;
+    // Radians travelled from the start angle, brought into one honest turn.
+    let travelled = (start - angle) % TURN;
+    if (travelled < 0) travelled += TURN;
+    const row = Math.round((travelled / span) * n - 0.5);
+    return row >= 0 && row < n ? row : -1;
+  }
+
   private pickCircular(sx: number, sy: number, tol: number): number {
     const t = this.tree as Tree;
     const lo = this.rect as RectLayout;
@@ -1331,16 +1380,11 @@ export class TreeRenderer {
     const wy = (sy - H / 2 - panY) / zoom;
 
     // Which leaf row the cursor's angle falls on — O(1), as in rect mode.
-    const angle = Math.atan2(wy, wx);
-    const start = (rotation * Math.PI) / 180;
-    const span = (arc * Math.PI) / 180;
-    let frac = (start - angle) / span;
-    while (frac < 0) frac += 1;
-    while (frac > 1) frac -= 1;
-    const leafIdx = clampInt(Math.round(frac * n - 0.5), 0, n - 1);
+    const row = this.leafRowAtAngle(Math.atan2(wy, wx), n);
+    const leafIdx = clampInt(row < 0 ? 0 : row, 0, n - 1);
 
     const pt = (id: number) =>
-      rectToPolar(lo.maxX > 0 ? lo.x[id] / lo.maxX : 0, lo.y[id], n, R, rotation, arc);
+      rectToPolar(this.radialFraction(lo, id), lo.y[id], n, R, rotation, arc);
 
     // Measure to the BRANCH. A circular branch is a radial run at the child's
     // angle plus an arc at the parent's radius; testing only vertex positions
@@ -1467,7 +1511,7 @@ export class TreeRenderer {
       const R = Math.min(this.width, this.height) * CIRC_RADIUS_FRACTION;
       const n = t.leaves.length || 1;
       const p = rectToPolar(
-        lo.fitX > 0 ? Math.min(1, lo.x[id] / lo.fitX) : 0,
+        this.radialFraction(lo, id),
         lo.y[id],
         n,
         R,
@@ -1546,14 +1590,8 @@ export class TreeRenderer {
       for (const hit of this.trackHits) {
         if (hit.mode !== "circular" || hit.r0 === undefined || hit.r1 === undefined) continue;
         if (r < hit.r0 || r > hit.r1) continue;
-        const angle = Math.atan2(wy, wx);
-        const start = (this.view.rotation * Math.PI) / 180;
-        const span = (this.view.arc * Math.PI) / 180;
-        let frac = (start - angle) / span;
-        while (frac < 0) frac += 1;
-        while (frac > 1) frac -= 1;
-        const row = Math.round(frac * n - 0.5);
-        if (row < 0 || row >= n) return null;
+        const row = this.leafRowAtAngle(Math.atan2(wy, wx), n);
+        if (row < 0) return null;
         return { track: hit.track, leafIndex: row };
       }
       return null;
