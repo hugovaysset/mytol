@@ -771,22 +771,35 @@ export class TreeRenderer {
     this.drawTrackMarkers();
   }
 
-  /** Rarity order for a categorical track: index 0 is the rarest category. */
-  private rarityRank(track: TrackInstance): Map<string, number> {
+  /**
+   * How common each category is on the whole track, as a fraction.
+   *
+   * Counted by the COLOUR a value will be drawn in, not by the value itself: a
+   * palette may map many values onto one colour — the taxonomy palettes send
+   * every unnamed phylum to a single "Other" grey — and counting by label
+   * would treat each of those as its own rare category.
+   */
+  private catFrequency(track: TrackInstance): Map<string, number> {
     const cached = this.catRank.get(track);
     if (cached) return cached;
+    const key = (v: string) => track.palette?.[v] ?? v;
     const counts = new Map<string, number>();
+    let total = 0;
     for (const v of track.values ?? []) {
       if (v == null) continue;
-      const k = String(v);
+      const k = key(String(v));
       counts.set(k, (counts.get(k) ?? 0) + 1);
+      total++;
     }
-    const rank = new Map<string, number>();
-    Array.from(counts.entries())
-      .sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
-      .forEach(([k], i) => rank.set(k, i));
-    this.catRank.set(track, rank);
-    return rank;
+    // Back to a per-value lookup, so the draw loop needs to know none of this.
+    const freq = new Map<string, number>();
+    for (const v of track.values ?? []) {
+      if (v == null) continue;
+      const label = String(v);
+      if (!freq.has(label)) freq.set(label, (counts.get(key(label)) ?? 1) / (total || 1));
+    }
+    this.catRank.set(track, freq);
+    return freq;
   }
 
   /**
@@ -814,9 +827,31 @@ export class TreeRenderer {
     const top = Math.floor(this.rowY(m, m.visibleLeafStart) - rowH / 2);
     const nBands = Math.max(1, Math.ceil(this.height) - top + 2);
     const best = new Int32Array(nBands).fill(-1);
-    const bestRank = new Float64Array(nBands).fill(Infinity);
     const hidden: Array<Map<string, number> | null> = new Array(nBands).fill(null);
-    const rank = values ? this.rarityRank(track) : null;
+    const freq = values ? this.catFrequency(track) : null;
+    /**
+     * Per band: how many leaves of each category landed on it, and the first
+     * leaf of each, so the winner can be turned back into a leaf index.
+     *
+     * The row is won by the category MOST COMMON on it, with ties broken
+     * toward the globally rarer one.
+     *
+     * Two other rules were tried. Rarest-wins keeps a rare category visible,
+     * which is the point of the strip, but at twenty-odd leaves to the pixel
+     * any category on a few percent of tips appears in most rows and takes
+     * nearly all of them — the taxonomy palettes have exactly such a category,
+     * the "Other" grey every unnamed phylum falls to, and it swallowed the
+     * strip. Weighting by over-representation only moves that threshold.
+     *
+     * No rule on frequency alone can separate the two cases, because the
+     * difference is not how common a category is but whether it is CLUSTERED:
+     * a clade of Thoeris is a run of adjacent tips and wins its rows outright,
+     * while an unnamed phylum is scattered one tip at a time. Majority-wins
+     * therefore shows real structure as solid blocks, and what it cannot show
+     * is not lost — it becomes a caret, which is what carets are for.
+     */
+    const tally: Array<Map<string, number> | null> = new Array(nBands).fill(null);
+    const firstOf: Array<Map<string, number> | null> = new Array(nBands).fill(null);
     // Continuous tracks average instead of competing: a pixel row stands for
     // dozens of leaves, and its mean is the honest summary of them. Taking the
     // maximum — the natural analogue of "rarest wins" — paints the whole column
@@ -833,7 +868,6 @@ export class TreeRenderer {
       if (band < 0 || band >= nBands) continue;
       if (anyLeaf[band] < 0) anyLeaf[band] = i;
 
-      let score: number;
       if (numeric) {
         const v = numeric[i];
         if (Number.isNaN(v)) continue;
@@ -841,33 +875,43 @@ export class TreeRenderer {
         nSum![band]++;
         // Any leaf will do as the row's representative; the colour comes from
         // the mean, and the first one gives the tooltip something to name.
-        score = best[band] >= 0 ? Infinity : 0;
-      } else {
-        const v = values![i];
-        if (v == null) continue;
-        score = rank!.get(String(v)) ?? Infinity;
+        if (best[band] < 0) best[band] = i;
+        continue;
       }
 
-      if (score < bestRank[band]) {
-        // The category being displaced still happened here.
-        if (values && best[band] >= 0) {
-          const prev = values[best[band]];
-          if (prev != null) {
-            let h = hidden[band];
-            if (!h) hidden[band] = h = new Map();
-            const k = String(prev);
-            h.set(k, (h.get(k) ?? 0) + 1);
+      const v = values![i];
+      if (v == null) continue;
+      const k = String(v);
+      let counts = tally[band];
+      if (!counts) tally[band] = counts = new Map();
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+      let firsts = firstOf[band];
+      if (!firsts) firstOf[band] = firsts = new Map();
+      if (!firsts.has(k)) firsts.set(k, i);
+    }
+
+    // Decide each row, and remember what it could not show.
+    if (values) {
+      for (let b = 0; b < nBands; b++) {
+        const counts = tally[b];
+        if (!counts) continue;
+        let winner = "";
+        let bestN = -1;
+        let bestFreq = Infinity;
+        for (const [k, n] of counts) {
+          const f = freq!.get(k) ?? 1;
+          if (n > bestN || (n === bestN && f < bestFreq)) {
+            bestN = n;
+            bestFreq = f;
+            winner = k;
           }
         }
-        bestRank[band] = score;
-        best[band] = i;
-      } else if (values) {
-        const v = values[i];
-        if (v != null && String(v) !== String(values[best[band]])) {
-          let h = hidden[band];
-          if (!h) hidden[band] = h = new Map();
-          const k = String(v);
-          h.set(k, (h.get(k) ?? 0) + 1);
+        best[b] = firstOf[b]!.get(winner) ?? -1;
+        for (const [k, n] of counts) {
+          if (k === winner) continue;
+          let h = hidden[b];
+          if (!h) hidden[b] = h = new Map();
+          h.set(k, (h.get(k) ?? 0) + n);
         }
       }
     }

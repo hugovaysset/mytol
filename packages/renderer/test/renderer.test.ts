@@ -1218,14 +1218,42 @@ describe("annotation strips below one pixel per row", () => {
     }
   });
 
-  it("keeps a rare category visible instead of letting the common one win", () => {
-    const { r, calls } = stripSetup();
+  it("shows a clustered rare category as a block of its own colour", () => {
+    // A clade of one category: adjacent tips, so it wins its rows outright and
+    // reads as the solid block it is.
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r, calls } = makeRenderer(nodes[0] + ";", 500, 120);
+    r.setTracks([
+      {
+        type: "colorstrip",
+        label: "df_type",
+        visible: true,
+        values: Array.from({ length: 4000 }, (_, i) =>
+          i >= 1000 && i < 1200 ? "Thoeris" : "PD-T7-2",
+        ),
+        palette: { Thoeris: "#111111", "PD-T7-2": "#eeeeee" },
+      },
+    ]);
+    r.setStyle({ showLeafLabels: false });
     calls.rects.length = 0;
     r.draw();
     const rare = stripFills(calls).filter((q) => q.color === "#111111");
-    // ~41 Thoeris leaves spread over 4000; a majority vote per pixel row would
-    // show none of them at all.
     expect(rare.length).toBeGreaterThan(0);
+  });
+
+  it("marks a scattered rare category it cannot draw", () => {
+    // Spread one tip at a time through a common background, it never wins a
+    // row — so it must surface as a caret rather than vanish.
+    const { r } = stripSetup();
+    r.draw();
+    expect(r.markersForTest().some((mk) => mk.category === "Thoeris")).toBe(true);
   });
 
   it("marks the categories a pixel row could not show", () => {
@@ -1444,25 +1472,23 @@ describe("hidden-category markers", () => {
   }
 
   it("stays quiet when the displaced category is drawn nearby anyway", () => {
-    // Archaea comes in occasional clumps. It is the rarer category, so it wins
-    // every pixel row it lands on and displaces Bacteria there — but Bacteria
-    // still holds the rows either side, plainly visible.
-    const r = twoCategories((i) => (i % 400 < 4 ? "Archaea" : "Bacteria"));
+    // Archaea in clumps big enough to win their own rows, Bacteria everywhere
+    // else: both are plainly visible, so neither needs a caret.
+    const r = twoCategories((i) => (i % 400 < 60 ? "Archaea" : "Bacteria"));
     expect(r.markersForTest()).toHaveLength(0);
   });
 
   it("marks a category the strip cannot show at all", () => {
-    // Archaea appears on every pixel row, so it wins every one and Bacteria is
-    // never drawn: without a marker the strip would claim the tree is entirely
-    // archaeal.
-    const r = twoCategories((i) => (i % 2 === 0 ? "Archaea" : "Bacteria"));
+    // Archaea is scattered one tip at a time and never carries a row, so
+    // without a marker the strip would claim the tree is entirely bacterial.
+    const r = twoCategories((i) => (i % 50 === 0 ? "Archaea" : "Bacteria"));
     const marks = r.markersForTest();
     expect(marks.length).toBeGreaterThan(0);
-    for (const mk of marks) expect(mk.category).toBe("Bacteria");
+    for (const mk of marks) expect(mk.category).toBe("Archaea");
   });
 
   it("counts how many leaves each marker stands for", () => {
-    const r = twoCategories((i) => (i % 2 === 0 ? "Archaea" : "Bacteria"));
+    const r = twoCategories((i) => (i % 50 === 0 ? "Archaea" : "Bacteria"));
     const marks = r.markersForTest();
     expect(marks.length).toBeGreaterThan(0);
     for (const mk of marks) expect(mk.count).toBeGreaterThan(0);
@@ -1869,5 +1895,71 @@ describe("finding a selected tip", () => {
     calls.rects.length = 0;
     r.draw();
     expect(calls.rects.find((q) => q.x === 0 && q.h === 1 && q.w > 300)).toBeUndefined();
+  });
+});
+
+describe("strips whose palette pools many values into one colour", () => {
+  /**
+   * The taxonomy palettes send every unnamed phylum to a single grey. Ranking
+   * by label makes each of those individually rare, so they win row after row
+   * and the strip comes out mostly grey — the opposite of what the palette is
+   * for.
+   */
+  function draw(n = 4000) {
+    let nodes = Array.from({ length: n }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    const { r, calls } = makeRenderer(nodes[0] + ";", 500, 200);
+    // One named phylum on most tips, and a long tail of rare unnamed ones that
+    // the palette all sends to the same grey.
+    const values = Array.from({ length: n }, (_, i) =>
+      i % 5 === 0 ? `Rare${i}` : "Pseudomonadota",
+    );
+    const palette: Record<string, string> = { Pseudomonadota: "#335c67" };
+    for (let i = 0; i < n; i += 5) palette[`Rare${i}`] = "#918e8e";
+    r.setTracks([{ type: "colorstrip", label: "phylum", visible: true, values, palette }]);
+    r.setStyle({ showLeafLabels: false });
+    calls.rects.length = 0;
+    r.draw();
+    return calls.rects.filter((q) => q.w === 18);
+  }
+
+  it("does not let a pooled catch-all take over the strip", () => {
+    const fills = draw();
+    const grey = fills.filter((q) => q.color === "#918e8e").length;
+    expect(grey / fills.length).toBeLessThan(0.5);
+  });
+
+  it("still shows the pooled values where they actually dominate", () => {
+    // Collectively common is not the same as absent. Where the unnamed phyla
+    // form a run they carry their rows like any other category.
+    const { canvas, calls } = stubCanvas(500, 200);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    let nodes = Array.from({ length: 4000 }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    r.setTree(parseNewick(nodes[0] + ";"));
+    r.resize(500, 200);
+    const values = Array.from({ length: 4000 }, (_, i) =>
+      i >= 2000 && i < 2400 ? `Rare${i}` : "Pseudomonadota",
+    );
+    const palette: Record<string, string> = { Pseudomonadota: "#335c67" };
+    for (let i = 2000; i < 2400; i++) palette[`Rare${i}`] = "#918e8e";
+    r.setTracks([{ type: "colorstrip", label: "phylum", visible: true, values, palette }]);
+    r.setStyle({ showLeafLabels: false });
+    calls.rects.length = 0;
+    r.draw();
+    const fills = calls.rects.filter((q) => q.w === 18);
+    expect(fills.some((q) => q.color === "#918e8e")).toBe(true);
   });
 });
