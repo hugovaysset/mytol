@@ -49,6 +49,7 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
   const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [], strokes: [] };
   const ctx: Record<string, unknown> = {
     fillStyle: "",
+    globalAlpha: 1,
     strokeStyle: "",
     lineWidth: 1,
     font: "",
@@ -1760,5 +1761,113 @@ describe("an edge is coloured by its child", () => {
     const color = r.branchColorForTest(clade);
     // One stroke per edge: one edge leads here, two leave.
     expect(tally(calls.strokes, color)).toBe(1);
+  });
+});
+
+describe("pointing at a selected tip", () => {
+  function bigTree(n = 4000) {
+    let nodes = Array.from({ length: n }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    return nodes[0] + ";";
+  }
+
+  function draw(mode: "rect" | "circular" | "unrooted", leaves: number[]) {
+    const { r, calls } = makeRenderer(bigTree(), 600, 400);
+    r.setStyle({ showLeafLabels: false });
+    r.setView({ mode });
+    r.setHighlight({ selection: new Set(leaves) });
+    calls.fill = 0;
+    r.draw();
+    return calls;
+  }
+
+  it("draws a caret for a single selected tip", () => {
+    // At 4000 tips on 400px the selection tick is a fraction of a pixel; the
+    // caret is the only thing that makes the tip findable.
+    const withSel = draw("rect", [2000]);
+    const without = draw("rect", []);
+    expect(withSel.fill).toBeGreaterThan(without.fill);
+  });
+
+  it("draws one caret per tip for a handful", () => {
+    const one = draw("rect", [1000]);
+    const three = draw("rect", [1000, 2000, 3000]);
+    expect(three.fill - one.fill).toBe(2);
+  });
+
+  it("stops once the selection is too large to point at", () => {
+    // Past a handful a caret per tip is a second, noisier copy of the
+    // selection rather than a pointer to it.
+    const many = draw("rect", Array.from({ length: 400 }, (_, i) => i * 10));
+    const none = draw("rect", []);
+    expect(many.fill).toBe(none.fill);
+  });
+
+  it("points at the selected tip in circular mode too", () => {
+    expect(draw("circular", [2000]).fill).toBeGreaterThan(draw("circular", []).fill);
+  });
+
+  it("points at the selected tip in unrooted mode too", () => {
+    expect(draw("unrooted", [2000]).fill).toBeGreaterThan(draw("unrooted", []).fill);
+  });
+});
+
+describe("finding a selected tip", () => {
+  function big(n = 4000) {
+    let nodes = Array.from({ length: n }, (_, i) => `L${i}:0.05`);
+    while (nodes.length > 1) {
+      const next: string[] = [];
+      for (let i = 0; i < nodes.length; i += 2) {
+        next.push(i + 1 < nodes.length ? `(${nodes[i]},${nodes[i + 1]}):0.05` : nodes[i]);
+      }
+      nodes = next;
+    }
+    return nodes[0] + ";";
+  }
+
+  it("keeps the caret inside the canvas when there are no tracks", () => {
+    // With no annotation columns the marker's natural home is the very margin,
+    // where it is drawn but effectively invisible.
+    const { canvas, calls } = stubCanvas(600, 400);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick(big()));
+    r.resize(600, 400);
+    r.setStyle({ showLeafLabels: false });
+    r.setHighlight({ selection: new Set([2000]) });
+    calls.maxX = -Infinity;
+    r.draw();
+    expect(calls.maxX).toBeLessThanOrEqual(600);
+  });
+
+  it("draws a guide along the selected row", () => {
+    const { canvas, calls } = stubCanvas(600, 400);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick(big()));
+    r.resize(600, 400);
+    r.setStyle({ showLeafLabels: false });
+    r.setHighlight({ selection: new Set([2000]) });
+    calls.rects.length = 0;
+    r.draw();
+    // A full-width one-pixel bar starting at the left edge: nothing else drawn
+    // in this layout has that shape.
+    const guide = calls.rects.find((q) => q.x === 0 && q.h === 1 && q.w > 300);
+    expect(guide).toBeDefined();
+  });
+
+  it("draws no guide when nothing is selected", () => {
+    const { canvas, calls } = stubCanvas(600, 400);
+    const r = new TreeRenderer(canvas, { dpr: 1 });
+    r.setTree(parseNewick(big()));
+    r.resize(600, 400);
+    r.setStyle({ showLeafLabels: false });
+    calls.rects.length = 0;
+    r.draw();
+    expect(calls.rects.find((q) => q.x === 0 && q.h === 1 && q.w > 300)).toBeUndefined();
   });
 });
