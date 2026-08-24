@@ -108,14 +108,43 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
+/** tab20's pale companions, used to extend deep past ten categories. */
+const TAB20_PALE = TAB20.filter((_, i) => i % 2 === 1);
+
 /**
- * The palette a categorical track should use, chosen by how many categories it
- * has: deep up to 10, tab20 up to 20, spread colours beyond.
+ * The palette a categorical track should use, by how many categories it has.
+ *
+ * Deep is the default and stays the default past ten: rather than switching
+ * wholesale to tab20 — which would repaint every category the moment an
+ * eleventh appeared, and hand some of the first ten tab20's greys — the first
+ * ten keep their deep colours and the rest take tab20's pale companions. Read
+ * with the domain in frequency order, that puts the strongest colours on the
+ * categories most of the data is in.
+ *
+ * Beyond twenty no named palette helps, so hues are spread evenly instead.
  */
 export function paletteFor(n: number): string[] {
   if (n <= DEEP.length) return DEEP;
-  if (n <= TAB20.length) return TAB20;
+  if (n <= DEEP.length + TAB20_PALE.length) return [...DEEP, ...TAB20_PALE];
   return spreadColors(n);
+}
+
+/**
+ * Colours for a domain that already arrives in a meaningful order.
+ *
+ * Unlike `autoPalette`, which sorts to defend against caller-dependent
+ * ordering, this trusts the order it is given: the server returns a column's
+ * domain commonest-first, and spending the strongest colours on the categories
+ * that dominate the view is the whole point.
+ */
+export function paletteFromDomain(domain: string[]): Record<string, string> {
+  const seen = Array.from(new Set(domain));
+  const cols = paletteFor(seen.length);
+  const out: Record<string, string> = {};
+  seen.forEach((c, i) => {
+    out[c] = cols[i % cols.length];
+  });
+  return out;
 }
 
 /** matplotlib "Reds", the default continuous ramp. */
