@@ -186,6 +186,36 @@ export function lca(t: Tree, a: number, b: number): number {
 }
 
 /**
+ * The deepest node whose clade contains every one of `leafIndices`.
+ *
+ * Used when a selection arrives from somewhere that has no idea about
+ * topology — a lasso on the ordination map, say. Marking every path from the
+ * root down to each leaf lights up most of the tree and says almost nothing;
+ * the single clade that just encloses the selection is the honest answer to
+ * "where does this sit".
+ *
+ * O(k) via the clade intervals rather than by walking ancestor chains: the
+ * enclosing clade is the shallowest node whose [L, R) covers the selection's
+ * own span, found by climbing from the leftmost selected leaf.
+ */
+export function enclosingClade(t: Tree, leafIndices: Iterable<number>): number {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const i of leafIndices) {
+    if (i < lo) lo = i;
+    if (i >= hi) hi = i + 1;
+  }
+  if (!Number.isFinite(lo) || hi <= lo) return -1;
+  if (lo < 0 || hi > t.leaves.length) return -1;
+
+  let node = t.leaves[lo];
+  while (node !== -1 && (t.L[node] > lo || t.R[node] < hi)) {
+    node = t.parent[node];
+  }
+  return node;
+}
+
+/**
  * Infer which tool built the tree from the range of its support values.
  * Mirrors garrigue's heuristic: FastTree reports SH-like support in [0,1],
  * IQ-TREE reports UFBoot in [0,100].

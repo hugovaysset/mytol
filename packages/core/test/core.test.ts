@@ -19,6 +19,7 @@ import {
   leavesOf,
   nodeByUid,
   lca,
+  enclosingClade,
   layoutRectangular,
   layoutUnrooted,
   rectToPolar,
@@ -604,5 +605,46 @@ describe("scale", () => {
     const r = reroot(t, t.leaves[25000]);
     expect(r.leaves.length).toBe(50000);
     expect(totalBranchLength(r)).toBeCloseTo(totalBranchLength(t), 6);
+  });
+});
+
+describe("enclosingClade", () => {
+  it("returns the deepest clade covering a selection", () => {
+    const t = parseNewick("(((A,B),(C,D)),((E,F),(G,H)));");
+    // A and B -> their own parent, not the root
+    const ab = enclosingClade(t, [0, 1]);
+    expect(cladeSize(t, ab)).toBe(2);
+    // A and D -> the clade of ABCD
+    const abcd = enclosingClade(t, [0, 3]);
+    expect(cladeSize(t, abcd)).toBe(4);
+    // A and H -> only the root encloses both
+    expect(enclosingClade(t, [0, 7])).toBe(t.root);
+  });
+
+  it("a single leaf encloses itself", () => {
+    const t = parseNewick("((A,B),(C,D));");
+    expect(enclosingClade(t, [2])).toBe(t.leaves[2]);
+  });
+
+  it("a scattered selection still yields one clade, not many paths", () => {
+    const t = parseNewick("(((A,B),(C,D)),((E,F),(G,H)));");
+    // non-contiguous, but the answer is still a single enclosing clade
+    const n = enclosingClade(t, [1, 5]);
+    expect(cladeSize(t, n)).toBe(8);
+  });
+
+  it("is empty for an empty selection", () => {
+    const t = parseNewick("((A,B),(C,D));");
+    expect(enclosingClade(t, [])).toBe(-1);
+  });
+
+  it("ignores indices outside the tree", () => {
+    const t = parseNewick("((A,B),(C,D));");
+    expect(enclosingClade(t, [99])).toBe(-1);
+  });
+
+  it("covers the whole tree when everything is selected", () => {
+    const t = parseNewick("(((A,B),(C,D)),((E,F),(G,H)));");
+    expect(enclosingClade(t, [0, 1, 2, 3, 4, 5, 6, 7])).toBe(t.root);
   });
 });
