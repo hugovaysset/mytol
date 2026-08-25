@@ -241,6 +241,15 @@ export class TreeRenderer {
   }
 
   setHighlight(h: Partial<HighlightState>): void {
+    // A repaint only when something actually changed. This is called from a
+    // window-level mousemove handler, so an unconditional `requestDraw` meant
+    // the tree redrew on every pointer move anywhere on the page — including
+    // while the user was working in a different panel entirely.
+    let changed = false;
+    for (const k of Object.keys(h) as Array<keyof HighlightState>) {
+      if (this.highlight[k] !== h[k]) { changed = true; break; }
+    }
+    if (!changed) return;
     this.highlight = { ...this.highlight, ...h };
     this.requestDraw();
   }

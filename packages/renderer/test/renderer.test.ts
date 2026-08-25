@@ -2159,3 +2159,65 @@ describe("a wide ring on a small canvas", () => {
     expect(r.ringOuterForTest()).toBeGreaterThan(600);
   });
 });
+
+describe("setHighlight only repaints when something changed", () => {
+  /*
+   * It is called from a window-level mousemove handler, so an unconditional
+   * requestDraw meant the tree redrew on every pointer move anywhere on the
+   * page — including while the user was working in another panel entirely.
+   * Measured on the 40k-tip SIR2 tree: forty moves over an unrelated rail cost
+   * 371,920 fill operations and pushed frame times past 30 ms.
+   *
+   * Counting the repaint *requests* rather than the drawing, because that is
+   * exactly what changed: `draw()` itself must still paint whenever it is
+   * called.
+   */
+  function countRequests(r: TreeRenderer) {
+    const seen = { n: 0 };
+    const original = (r as unknown as { requestDraw: () => void }).requestDraw;
+    (r as unknown as { requestDraw: () => void }).requestDraw = function patched() {
+      seen.n++;
+      return original.call(r);
+    };
+    return seen;
+  }
+
+  it("asks for no repaint when the hover is set to the value it already has", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setHighlight({ hover: 2 });
+    const seen = countRequests(r);
+
+    r.setHighlight({ hover: 2 });
+    expect(seen.n).toBe(0);
+
+    r.setHighlight({ hover: 2 });
+    r.setHighlight({ hover: 2 });
+    expect(seen.n).toBe(0);
+  });
+
+  it("asks for one when it does change, and the change reaches the drawing", () => {
+    const { r, calls } = makeRenderer(SIMPLE);
+    r.setHighlight({ hover: -1 });
+    calls.ops.length = 0;
+    r.draw();
+    const unhovered = calls.ops.join(",");
+
+    const seen = countRequests(r);
+    r.setHighlight({ hover: 1 });
+    expect(seen.n).toBe(1);
+
+    calls.ops.length = 0;
+    r.draw();
+    // The guard must not swallow the value: a hovered tree has to paint
+    // something an unhovered one does not.
+    expect(calls.ops.join(",")).not.toBe(unhovered);
+  });
+
+  it("notices a change in any field, not only the first", () => {
+    const { r } = makeRenderer(SIMPLE);
+    r.setHighlight({ hover: 5, pinned: -1 });
+    const seen = countRequests(r);
+    r.setHighlight({ hover: 5, pinned: 2 });
+    expect(seen.n).toBe(1);
+  });
+});
