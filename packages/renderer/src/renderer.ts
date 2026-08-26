@@ -39,6 +39,7 @@ import {
   emptyHighlight,
 } from "./types";
 import { getTrack, initTrack, heatValueColor, hashColor } from "./registry";
+import { SvgContext, type DrawTarget } from "./svg";
 
 const PADDING = 40;
 const LABEL_RESERVE_PX = 150;
@@ -87,7 +88,15 @@ export interface TrackHover {
 
 export class TreeRenderer {
   private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
+  /**
+   * Where drawing goes.
+   *
+   * Not `readonly`, and typed as the subset rather than the full context: an
+   * export swaps in a recorder for one `draw()` and puts this back, so the
+   * exported picture is the drawn picture rather than a second implementation
+   * of it. See `svg.ts`.
+   */
+  private ctx: CanvasRenderingContext2D | DrawTarget;
   private dpr: number;
 
   private tree: Tree | null = null;
@@ -302,6 +311,48 @@ export class TreeRenderer {
       this.frame = 0;
       this.draw();
     });
+  }
+
+  // -- export ----------------------------------------------------------------
+
+  /**
+   * Draw the current view somewhere other than the screen.
+   *
+   * The one honest way to export a canvas view: run the same `draw()` against
+   * a different target. Anything else is a second renderer that starts correct
+   * and drifts. `scale` stands in for the device pixel ratio, so 3 gives a
+   * bitmap with three times the linear resolution of what is on screen — the
+   * text and the hairlines get sharper rather than being blown up.
+   */
+  drawTo(target: CanvasRenderingContext2D | DrawTarget, scale = 1): void {
+    const ctx = this.ctx;
+    const dpr = this.dpr;
+    this.ctx = target;
+    this.dpr = scale;
+    try {
+      this.draw();
+    } finally {
+      this.ctx = ctx;
+      this.dpr = dpr;
+    }
+  }
+
+  /** The current view as a bitmap, `scale`x the on-screen linear resolution. */
+  toCanvas(scale = 3): HTMLCanvasElement {
+    const out = document.createElement("canvas");
+    out.width = Math.max(1, Math.round(this.width * scale));
+    out.height = Math.max(1, Math.round(this.height * scale));
+    const ctx = out.getContext("2d");
+    if (!ctx) throw new Error("could not obtain a 2d canvas context");
+    this.drawTo(ctx, scale);
+    return out;
+  }
+
+  /** The current view as vector art, at the size it is on screen. */
+  toSVG(): string {
+    const rec = new SvgContext(this.width, this.height, this.style.background);
+    this.drawTo(rec, 1);
+    return rec.toSVG();
   }
 
   /** Cancel a pending frame; call on unmount. */
@@ -1387,7 +1438,7 @@ export class TreeRenderer {
   }
 
   private drawRings(
-    ctx: CanvasRenderingContext2D,
+    ctx: DrawTarget,
     R: number,
     n: number,
     halfStep: number,
@@ -1459,7 +1510,7 @@ export class TreeRenderer {
 
   /** Fill the annular sector spanning leaf rows [rowA, rowB]. */
   private fillWedge(
-    ctx: CanvasRenderingContext2D,
+    ctx: DrawTarget,
     rInner: number,
     rOuter: number,
     rowA: number,
