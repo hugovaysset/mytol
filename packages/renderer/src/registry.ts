@@ -432,3 +432,114 @@ registerTrack("domains", {
     return Object.entries(track.palette ?? {}).map(([label, color]) => ({ label, color }));
   },
 });
+
+/** One gene in a genomic neighbourhood, in coordinates relative to its target. */
+export interface LocusGene {
+  acc: string;
+  /** Start and end in base pairs from the middle of the target gene. */
+  s: number;
+  e: number;
+  /** Pointing right after the locus has been oriented on its target. */
+  fwd: boolean;
+  /** What the colour is keyed on — family, Pfam, DefenseFinder type. */
+  key: string | null;
+  /** True for the target gene itself. */
+  self?: boolean;
+  cluster?: number | null;
+  pfam?: string | null;
+  df_type?: string | null;
+  df_subtype?: string | null;
+  df_gene?: string | null;
+  product?: string | null;
+}
+
+export interface LocusRecord {
+  target: string;
+  /** Base pairs drawn each side of the target. The column's shared scale. */
+  span: number;
+  genes: LocusGene[];
+}
+
+/**
+ * The genomic neighbourhood around each tip, as a row of gene arrows.
+ *
+ * Every locus is drawn on **one shared scale**, centred on its target gene and
+ * oriented so the target points right — the server does that normalisation.
+ * Both halves are what make the column readable: the same operon seen in two
+ * assemblies otherwise lands at two offsets, pointing two ways, and comparing
+ * neighbourhoods down the tree becomes impossible, which is the only thing
+ * this track is for.
+ *
+ * Colour is a key the server chose (homology family, Pfam, DefenseFinder
+ * type), so the palette here means what Hoodini's viewer means by it. The
+ * target gene is outlined rather than recoloured: it has to be findable
+ * without taking a colour away from the annotation being read.
+ */
+registerTrack("neighbourhood", {
+  width: 260,
+  // A locus is fifteen genes across; a 26px ring cannot show one.
+  wideRing: true,
+  init(track) {
+    if (!track.palette && track.values) {
+      const keys = new Set<string>();
+      for (const rec of track.values as Array<LocusRecord | undefined>) {
+        if (!rec) continue;
+        for (const g of rec.genes ?? []) if (g.key) keys.add(g.key);
+      }
+      track.palette = autoPalette(Array.from(keys).sort());
+    }
+  },
+  drawCell(ctx, x, y, w, h, leafIndex, track) {
+    const rec = track.values?.[leafIndex] as LocusRecord | undefined;
+    if (!rec || !rec.genes?.length) return;
+    const span = rec.span || 20000;
+    const scale = w / (2 * span);
+    const midY = y + h / 2;
+
+    // The contig runs the full width: the arrows sit on it, and without it a
+    // sparse locus reads as a few unrelated boxes rather than one region.
+    ctx.fillStyle = "#d5d8dd";
+    ctx.fillRect(x, midY - Math.max(0.4, h * 0.04), w, Math.max(1, h * 0.08));
+
+    const boxH = Math.max(2, h * 0.66);
+    const head = Math.min(boxH * 0.6, 5);
+    for (const g of rec.genes) {
+      const gx0 = x + (g.s + span) * scale;
+      const gx1 = x + (g.e + span) * scale;
+      const gw = Math.max(1, gx1 - gx0);
+      ctx.fillStyle = g.key ? (track.palette?.[g.key] ?? "#9aa3ad") : "#c9ced6";
+
+      if (gw <= head * 1.5 || boxH < 4) {
+        // Too narrow for an arrow head; a plain box at least keeps the gene
+        // visible, which matters more at this size than its direction.
+        ctx.fillRect(gx0, midY - boxH / 2, gw, boxH);
+      } else {
+        ctx.beginPath();
+        if (g.fwd) {
+          ctx.moveTo(gx0, midY - boxH / 2);
+          ctx.lineTo(gx1 - head, midY - boxH / 2);
+          ctx.lineTo(gx1, midY);
+          ctx.lineTo(gx1 - head, midY + boxH / 2);
+          ctx.lineTo(gx0, midY + boxH / 2);
+        } else {
+          ctx.moveTo(gx1, midY - boxH / 2);
+          ctx.lineTo(gx0 + head, midY - boxH / 2);
+          ctx.lineTo(gx0, midY);
+          ctx.lineTo(gx0 + head, midY + boxH / 2);
+          ctx.lineTo(gx1, midY + boxH / 2);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      if (g.self && boxH >= 4) {
+        ctx.strokeStyle = "#101418";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(gx0 - 0.5, midY - boxH / 2 - 0.5, gw + 1, boxH + 1);
+      }
+    }
+  },
+  legend(track) {
+    return Object.entries(track.palette ?? {}).map(([label, color]) => ({ label, color }));
+  },
+});
