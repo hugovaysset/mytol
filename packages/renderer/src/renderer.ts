@@ -39,6 +39,7 @@ import {
   emptyHighlight,
 } from "./types";
 import { getTrack, initTrack, heatValueColor, hashColor } from "./registry";
+import type { LocusGene, LocusRecord } from "./registry";
 import { SvgContext, type DrawTarget } from "./svg";
 
 const PADDING = 40;
@@ -84,6 +85,8 @@ export interface TrackHover {
   hiddenCount?: number;
   /** Set only over a domain-layout track: the domain under the cursor. */
   domain?: { name: string; acc?: string; start: number; end: number };
+  /** Set only over a neighbourhood track: the gene under the cursor. */
+  gene?: LocusGene;
 }
 
 export class TreeRenderer {
@@ -779,6 +782,39 @@ export class TreeRenderer {
       if (aa >= d.start && aa <= d.end) return d;
     }
     return undefined;
+  }
+
+  /**
+   * The gene under the cursor in a neighbourhood track.
+   *
+   * Uses `drawCell`'s scale, not its own — a hit test that computes the
+   * geometry a second time is a tooltip that eventually names a different gene
+   * from the arrow under the pointer, and that has already happened twice in
+   * this renderer for other reasons.
+   *
+   * Genes can abut, so the nearest-centre gene wins rather than the first
+   * whose extent contains the point: at fifteen genes across 260 pixels a
+   * one-pixel overlap otherwise makes a neighbour unhoverable.
+   */
+  private geneAt(
+    track: TrackInstance,
+    leafIndex: number,
+    offset: number,
+    width: number,
+  ): LocusGene | undefined {
+    if (track.type !== "neighbourhood" || width <= 0) return undefined;
+    const rec = track.values?.[leafIndex] as LocusRecord | undefined;
+    if (!rec?.genes?.length) return undefined;
+    const span = rec.span || 20000;
+    const bp = (offset / width) * 2 * span - span;
+    let best: LocusGene | undefined;
+    let bestD = Infinity;
+    for (const g of rec.genes) {
+      if (bp < g.s || bp > g.e) continue;
+      const d = Math.abs(bp - (g.s + g.e) / 2);
+      if (d < bestD) { bestD = d; best = g; }
+    }
+    return best;
   }
 
   /** Which leaf row a screen point falls on in circular mode, by angle alone. */
@@ -1938,6 +1974,7 @@ export class TreeRenderer {
             track: hit.track,
             leafIndex: leaf,
             domain: this.domainAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
+            gene: this.geneAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
           };
         }
         let leafIndex = this.leafIndexAt(sy);
@@ -1952,6 +1989,7 @@ export class TreeRenderer {
           track: hit.track,
           leafIndex,
           domain: this.domainAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
+          gene: this.geneAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
         };
       }
       return null;
@@ -1980,6 +2018,7 @@ export class TreeRenderer {
           // On a ring the layout runs outward, so depth into the ring is what
           // the rectangular layout reads off x.
           domain: this.domainAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
+          gene: this.geneAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
         };
       }
       return null;
