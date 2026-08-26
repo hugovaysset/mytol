@@ -8,6 +8,7 @@
  */
 
 import type { Tree, Uid } from "@mytol/core";
+import type { DrawTarget } from "./svg";
 
 export type LayoutMode = "rect" | "circular" | "unrooted";
 
@@ -161,9 +162,16 @@ export interface TrackDef<T extends TrackInstance = TrackInstance> {
   wideRing?: boolean;
   /** Called once when the track is attached, to precompute scales/palettes. */
   init?(track: T, ctx: TrackInitContext): void;
-  /** Draw one leaf's cell. Called only for leaves that survive culling and LOD. */
+  /**
+   * Draw one leaf's cell. Called only for leaves that survive culling and LOD.
+   *
+   * The context is the drawing subset, not the full canvas interface, because
+   * the same call has to work against the SVG recorder an export runs through.
+   * A track that reaches for `drawImage` would not survive that, and would fail
+   * here rather than silently vanish from every exported figure.
+   */
   drawCell(
-    ctx: CanvasRenderingContext2D,
+    ctx: DrawTarget,
     x: number,
     y: number,
     w: number,
