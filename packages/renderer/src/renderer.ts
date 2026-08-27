@@ -73,6 +73,21 @@ const MIN_WIDE_RING = 30;
 /** Residue counts marked on length-scaled tracks. */
 const LENGTH_GUIDES = [500, 1000];
 
+/**
+ * The locator: the whole tree, small, in a corner, with the viewport marked.
+ *
+ * At forty thousand tips a screen holds a few hundred rows, so the view is
+ * looking at under one percent of the tree with nothing on screen to say
+ * which one percent. Scrollbars answer that for a document; a canvas that
+ * pans and zooms freely has none, and "where am I" was unanswerable without
+ * zooming out and losing the place.
+ */
+const MAP_W = 116;
+const MAP_H = 132;
+const MAP_PAD = 10;
+/** Left as it is below this: a map smaller than this is a smudge, not a map. */
+const MAP_MIN_PANE = 280;
+
 /** Length of the caret that points at a selected tip. */
 const POINTER_LEN = 11;
 /**
@@ -127,6 +142,31 @@ export class TreeRenderer {
 
   private tree: Tree | null = null;
   private rect: RectLayout | null = null;
+  /**
+   * The minimap's tree, drawn once and blitted after that.
+   *
+   * Redrawing forty thousand branches into a 116px box on every pan would cost
+   * more than the view it is a map of. The picture only changes when the tree,
+   * the layout or the colours do, which is what `mapKey` watches.
+   */
+  private mapCanvas: HTMLCanvasElement | null = null;
+  private mapKey = "";
+  /** Set while drawing to an export target, so chrome stays off the figure. */
+  private exporting = false;
+  /**
+   * A DOM layer the leaf labels are written into instead of the canvas.
+   *
+   * Canvas text cannot be selected, so an accession you could read was an
+   * accession you had to retype. With a layer attached the labels become real
+   * text nodes sitting exactly where the canvas would have painted them —
+   * selectable, copyable, and searchable by the browser's own find.
+   *
+   * Updated imperatively from `draw`, not through React state: they have to
+   * follow the tree on every frame of a pan, and a re-render per frame for a
+   * hundred spans is the thing that would make panning stutter.
+   */
+  private labelLayer: HTMLElement | null = null;
+  private labelPool: HTMLElement[] = [];
   private unrooted: UnrootedLayout | null = null;
 
   private view: ViewState;
@@ -355,11 +395,16 @@ export class TreeRenderer {
     const dpr = this.dpr;
     this.ctx = target;
     this.dpr = scale;
+    // The locator and the overflow bar are for navigating, not for reading.
+    // In a saved figure they are furniture from the application that produced
+    // it, so an export gets the tree and the columns and nothing else.
+    this.exporting = true;
     try {
       this.draw();
     } finally {
       this.ctx = ctx;
       this.dpr = dpr;
+      this.exporting = false;
     }
   }
 
@@ -740,6 +785,7 @@ export class TreeRenderer {
 
     this.drawTracks(m, rowH);
     this.drawOverflowBar(m);
+    this.drawMinimap(m);
 
     // A caret for each selected tip, once the selection is small enough that
     // pointing at them individually means something. At tens of thousands of
@@ -892,6 +938,23 @@ export class TreeRenderer {
   }
 
   /** Test seam: the rect metrics of the current view. */
+  /** Draw now, synchronously — `requestDraw` schedules a frame tests cannot await. */
+  drawForTest(): void {
+    this.draw();
+  }
+
+  /** The locator's box, for tests that need to click inside it. */
+  mapBoxForTest(): { x: number; y: number; w: number; h: number } | null {
+    return this.mapBox();
+  }
+
+  /** Where the viewport sits within the whole tree, as fractions. */
+  viewFractionForTest() {
+    const m = this.metrics();
+    if (!m) throw new Error("no metrics");
+    return this.viewFraction(m);
+  }
+
   metricsForTest(): RectMetrics {
     return this.metrics() as RectMetrics;
   }
@@ -930,7 +993,171 @@ export class TreeRenderer {
    * inside the canvas and a real scrollbar would need the two kept in step.
    * An indicator cannot drift out of agreement with what is on screen.
    */
+  /** Where the locator sits, or null when the pane is too small to carry one. */
+  private mapBox(): { x: number; y: number; w: number; h: number } | null {
+    if (this.view.mode !== "rect" || !this.tree || !this.rect) return null;
+    if (this.width < MAP_MIN_PANE || this.height < MAP_MIN_PANE) return null;
+    const w = Math.min(MAP_W, this.width * 0.28);
+    const h = Math.min(MAP_H, this.height * 0.34);
+    // Bottom left, above the overflow bar: the tree's own root is on the left,
+    // so the map is beside the part of the picture it is a map of, and the
+    // bottom-right corner is where hosts put their own controls.
+    return { x: MAP_PAD, y: this.height - h - MAP_PAD - 8, w, h };
+  }
+
+  /**
+   * The tree, whole, at map size.
+   *
+   * Every leaf row collapses to well under a pixel here, so this draws edges
+   * without any level-of-detail: the shape of the tree is the entire content
+   * and dropping small clades would change it. Once, into a cache.
+   */
+  private mapPicture(w: number, h: number): HTMLCanvasElement | null {
+    const t = this.tree;
+    const lo = this.rect;
+    if (!t || !lo || typeof document === "undefined") return null;
+    const key = `${t.count}|${lo.fitX}|${lo.height}|${w}x${h}|${this.style.branch}`;
+    if (this.mapCanvas && this.mapKey === key) return this.mapCanvas;
+
+    const dpr = Math.min(2, this.dpr || 1);
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(w * dpr));
+    c.height = Math.max(1, Math.round(h * dpr));
+    const g = c.getContext("2d");
+    if (!g) return null;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const sx = w / Math.max(1e-9, lo.fitX);
+    const sy = h / Math.max(1, lo.height);
+    g.strokeStyle = this.style.branch;
+    g.globalAlpha = 0.55;
+    g.lineWidth = 0.5;
+    g.beginPath();
+    for (let id = 0; id < t.count; id++) {
+      const parent = t.parent[id];
+      if (parent < 0) continue;
+      const x0 = Math.min(w, lo.x[parent] * sx);
+      const x1 = Math.min(w, lo.x[id] * sx);
+      const y0 = lo.y[parent] * sy;
+      const y1 = lo.y[id] * sy;
+      g.moveTo(x0, y1);
+      g.lineTo(x1, y1);
+      g.moveTo(x0, y0);
+      g.lineTo(x0, y1);
+    }
+    g.stroke();
+    this.mapCanvas = c;
+    this.mapKey = key;
+    return c;
+  }
+
+  /** The viewport as fractions of the whole tree, for the locator's rectangle. */
+  private viewFraction(m: RectMetrics) {
+    const n = Math.max(1, this.tree?.leaves.length ?? 1);
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    const left = this.view.panX + PADDING;
+    return {
+      top: clamp(m.visibleLeafStart / n),
+      bottom: clamp(m.visibleLeafEnd / n),
+      from: clamp(-left / Math.max(1, m.treeWidth)),
+      to: clamp((this.width - left) / Math.max(1, m.treeWidth)),
+    };
+  }
+
+  private drawMinimap(m: RectMetrics): void {
+    if (this.exporting) return;
+    const box = this.mapBox();
+    if (!box) return;
+    const pic = this.mapPicture(box.w, box.h);
+    if (!pic) return;
+    const ctx = this.ctx;
+    const f = this.viewFraction(m);
+    // Nothing to locate when the whole tree is already on screen.
+    if (f.top <= 0 && f.bottom >= 1 && f.from <= 0 && f.to >= 1) return;
+
+    ctx.save();
+    ctx.fillStyle = this.style.background;
+    ctx.globalAlpha = 0.88;
+    ctx.fillRect(box.x - 3, box.y - 3, box.w + 6, box.h + 6);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = this.style.textMuted;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(box.x - 2.5, box.y - 2.5, box.w + 5, box.h + 5);
+    ctx.globalAlpha = 1;
+    // `drawImage` is not part of the SVG recorder's surface, and an export
+    // never gets here anyway.
+    (ctx as CanvasRenderingContext2D).drawImage(pic, box.x, box.y, box.w, box.h);
+
+    // Everything outside the viewport dimmed, rather than the viewport
+    // outlined alone: at a 1% viewport the rectangle is two pixels tall and
+    // invisible against the branches, while the unshaded band is not.
+    const y0 = box.y + f.top * box.h;
+    const y1 = box.y + Math.max(f.top * box.h + 2, f.bottom * box.h);
+    const x0 = box.x + f.from * box.w;
+    const x1 = box.x + Math.max(f.from * box.w + 2, f.to * box.w);
+    ctx.fillStyle = this.style.background;
+    ctx.globalAlpha = 0.62;
+    ctx.fillRect(box.x, box.y, box.w, y0 - box.y);
+    ctx.fillRect(box.x, y1, box.w, box.y + box.h - y1);
+    ctx.fillRect(box.x, y0, x0 - box.x, y1 - y0);
+    ctx.fillRect(x1, y0, box.x + box.w - x1, y1 - y0);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = this.style.accent;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(1, x1 - x0 - 1), Math.max(1, y1 - y0 - 1));
+    ctx.restore();
+  }
+
+  /** True when a screen point is inside the locator. */
+  minimapHit(sx: number, sy: number): boolean {
+    const box = this.mapBox();
+    if (!box) return false;
+    const m = this.metrics();
+    if (!m) return false;
+    const f = this.viewFraction(m);
+    if (f.top <= 0 && f.bottom >= 1 && f.from <= 0 && f.to >= 1) return false;
+    return sx >= box.x - 3 && sx <= box.x + box.w + 3
+        && sy >= box.y - 3 && sy <= box.y + box.h + 3;
+  }
+
+  /**
+   * Centre the view on the point of the locator that was clicked.
+   *
+   * The inverse of what `drawMinimap` draws, written from the same box and the
+   * same metrics — clicking somewhere the rectangle is not, and having the
+   * rectangle land somewhere else, is the failure this codebase has already
+   * had twice from computing a position twice.
+   *
+   * Horizontal is moved only when there is horizontal travel to be had. When
+   * the tree already fits the pane, panX is 0 and every click would drag it
+   * off centre for no reason.
+   */
+  minimapGoTo(sx: number, sy: number): boolean {
+    const box = this.mapBox();
+    const lo = this.rect;
+    const t = this.tree;
+    if (!box || !lo || !t) return false;
+    const m = this.metrics();
+    if (!m) return false;
+
+    const H = this.height;
+    const n = Math.max(1, t.leaves.length);
+    const fy = Math.max(0, Math.min(1, (sy - box.y) / box.h));
+    const leaf = fy * n;
+    // `rowY` inverted: put `leaf` at the middle of the pane.
+    this.setView({ panY: (H / 2 - PADDING - m.sy * leaf) * this.view.vZoom });
+
+    const f = this.viewFraction(m);
+    if (f.to - f.from < 0.999) {
+      const fx = Math.max(0, Math.min(1, (sx - box.x) / box.w));
+      this.setView({ panX: this.width / 2 - PADDING - m.treeWidth * fx });
+    }
+    return true;
+  }
+
   private drawOverflowBar(m: RectMetrics): void {
+    if (this.exporting) return;
     const left = this.view.panX + PADDING;
     const right = m.trackWidth > 0 ? m.trackStartX + m.trackWidth : left + m.treeWidth;
     const total = right - left;
@@ -1317,10 +1544,32 @@ export class TreeRenderer {
     }
   }
 
+  /**
+   * Give the leaf labels somewhere to live as real text.
+   *
+   * Pass an absolutely-positioned element covering the canvas. Pass null to go
+   * back to painting them, which is also what an export always does.
+   */
+  setLabelLayer(el: HTMLElement | null): void {
+    if (this.labelLayer === el) return;
+    if (this.labelLayer) this.labelLayer.textContent = "";
+    this.labelLayer = el;
+    this.labelPool = [];
+    this.requestDraw();
+  }
+
   private drawLeafLabels(m: RectMetrics, rowH: number): void {
     // Same threshold that decided whether to reserve room for labels, so the
     // reserve and the drawing can never disagree.
-    if (!this.style.showLeafLabels || rowH < LABEL_MIN_ROW_PX) return;
+    const show = this.style.showLeafLabels && rowH >= LABEL_MIN_ROW_PX;
+    // The layer is for the screen. An export runs the same `draw` against a
+    // different target, and a PNG whose labels live in a div is a PNG with no
+    // labels — so exporting always paints them.
+    if (this.labelLayer && !this.exporting) {
+      this.syncLabelLayer(m, rowH, show);
+      return;
+    }
+    if (!show) return;
     const t = this.tree as Tree;
     const ctx = this.ctx;
     const mask = this.highlight.mask;
@@ -1335,6 +1584,66 @@ export class TreeRenderer {
       if (!name) continue;
       ctx.fillStyle = mask && !mask[i] ? this.style.dimmed : this.style.text;
       ctx.fillText(name, x, this.rowY(m, i));
+    }
+  }
+
+  /**
+   * Put one span per visible label where the canvas would have painted it.
+   *
+   * Elements are pooled and reused rather than recreated: a pan changes every
+   * label's position sixty times a second, and building a hundred nodes each
+   * time would keep the garbage collector busier than the renderer.
+   */
+  private syncLabelLayer(m: RectMetrics, rowH: number, show: boolean): void {
+    const layer = this.labelLayer as HTMLElement;
+    const t = this.tree as Tree;
+    const mask = this.highlight.mask;
+    const x = m.trackStartX + m.trackWidth + 4;
+    const size = Math.min(13, Math.max(6, rowH - 2));
+    let k = 0;
+
+    if (show) {
+      for (let i = m.visibleLeafStart; i < m.visibleLeafEnd; i++) {
+        const id = t.leaves[i];
+        const name = t.name[id];
+        if (!name) continue;
+        // A label whose row has scrolled off is still in the metrics' window,
+        // which pads by a row each way. On the canvas that padding costs
+        // nothing — the paint is clipped to the bitmap. In the DOM it is a real
+        // element above the canvas, sitting over whatever the host has drawn
+        // there: with the rows tall enough to label, the first one landed on
+        // the pane header and swallowed its clicks. `overflow: hidden` hides
+        // it and does not stop it being hit.
+        const y = this.rowY(m, i);
+        if (y < 0 || y > this.height) continue;
+
+        let el = this.labelPool[k];
+        if (!el) {
+          el = document.createElement("span");
+          el.className = "mytol-leaf-label";
+          el.style.position = "absolute";
+          el.style.whiteSpace = "pre";
+          el.style.pointerEvents = "auto";
+          el.style.userSelect = "text";
+          (el.style as unknown as Record<string, string>).webkitUserSelect = "text";
+          this.labelPool[k] = el;
+          layer.appendChild(el);
+        }
+        if (el.textContent !== name) el.textContent = name;
+        el.dataset.leaf = String(i);
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+        el.style.transform = "translateY(-50%)";
+        el.style.fontSize = `${size}px`;
+        el.style.fontFamily = this.style.fontFamily;
+        el.style.color = mask && !mask[i] ? this.style.dimmed : this.style.text;
+        el.style.display = "";
+        k++;
+      }
+    }
+    // Hidden rather than removed: the pool is what makes a pan cheap.
+    for (let j = k; j < this.labelPool.length; j++) {
+      this.labelPool[j].style.display = "none";
     }
   }
 
