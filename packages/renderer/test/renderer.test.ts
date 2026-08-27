@@ -2418,3 +2418,84 @@ describe("leaf labels as real text", () => {
     }
   });
 });
+
+describe("the elevator", () => {
+  const many = () => {
+    const tips = Array.from({ length: 4000 }, (_, i) => `t${i}:0.1`);
+    return `(${tips.join(",")});`;
+  };
+
+  it("stays out of the way while the whole tree is on screen", () => {
+    const { r } = makeRenderer(SIMPLE, 900, 700);
+    expect(r.elevatorForTest()).toBeNull();
+    expect(r.elevatorHit(890, 300)).toBe(false);
+  });
+
+  it("takes a click anywhere on its track, not only on the thumb", () => {
+    // Clicking above or below the thumb is how a scrollbar moves a page at a
+    // time; refusing it would make the control look broken.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const b = r.elevatorForTest()!;
+    expect(r.elevatorHit(b.x + b.w / 2, b.y + 5)).toBe(true);
+    expect(r.elevatorHit(b.x + b.w / 2, b.y + b.h - 5)).toBe(true);
+    expect(r.elevatorHit(b.x - 40, b.y + b.h / 2)).toBe(false);
+  });
+
+  it("puts the top of the view where the thumb was dragged to", () => {
+    // Drawing and dragging are one rule seen twice; this is the round trip
+    // that keeps them from drifting apart.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const n = 4000;
+    for (const f of [0, 0.25, 0.6, 1]) {
+      const b = r.elevatorForTest()!;
+      const travel = b.h - b.thumb.h;
+      r.elevatorGoTo(b.y + b.thumb.h / 2 + f * travel);
+      const m = r.metricsForTest();
+      const shown = m.visibleLeafEnd - m.visibleLeafStart;
+      const want = f * (n - shown);
+      // Within a couple of rows: `visibleLeafStart` pads by one either way.
+      expect(Math.abs(m.visibleLeafStart - want)).toBeLessThan(4);
+    }
+  });
+
+  it("cannot be dragged past either end", () => {
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const b = r.elevatorForTest()!;
+    r.elevatorGoTo(b.y - 500);
+    expect(r.metricsForTest().visibleLeafStart).toBe(0);
+    r.elevatorGoTo(b.y + b.h + 500);
+    // Dragged past the bottom, the last tip is on screen and the view has not
+    // run off into empty space below it.
+    const end = r.metricsForTest();
+    expect(end.visibleLeafEnd).toBe(4000);
+    const shown = end.visibleLeafEnd - end.visibleLeafStart;
+    expect(end.visibleLeafStart).toBeGreaterThan(4000 - shown - 4);
+  });
+
+  it("scrolls the same number of rows at any zoom", () => {
+    // The point of scrolling in rows rather than pixels: one notch has to
+    // cover the same amount of tree whether a row is thirty pixels or one.
+    const { r } = makeRenderer(many(), 900, 700);
+    const moved = (zoom: number) => {
+      r.setView({ vZoom: zoom, panY: 0 });
+      const before = r.metricsForTest().visibleLeafStart;
+      r.scrollByRows(200);
+      return r.metricsForTest().visibleLeafStart - before;
+    };
+    expect(moved(40)).toBeCloseTo(200, 0);
+    expect(moved(8)).toBeCloseTo(200, 0);
+  });
+
+  it("is not drawn into an export", () => {
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const withBar = r.toSVG();
+    // The track and thumb are the only capsules in this drawing; an export
+    // that contained them would carry two more closed paths than one without.
+    expect(r.elevatorForTest()).not.toBeNull();
+    expect(withBar).not.toContain("elevator");
+  });
+});

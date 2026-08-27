@@ -103,6 +103,33 @@ const MAP_PAD = 10;
 /** Left as it is below this: a map smaller than this is a smudge, not a map. */
 const MAP_MIN_PANE = 280;
 
+/**
+ * The elevator: a vertical scrollbar at the right edge, in leaf-index units.
+ *
+ * The locator answers "where am I" at a glance. This answers "take me a little
+ * further down", which the locator is bad at — its whole height is forty
+ * thousand tips, so a pixel of it is three hundred rows and a careful nudge is
+ * not possible. A scrollbar's thumb is the same gesture at the scale a reader
+ * actually works in.
+ *
+ * Deliberately faint. It sits over the annotation columns, and a control that
+ * is only needed while it is being used should not compete with the data for
+ * attention the rest of the time.
+ */
+const ELEVATOR_W = 9;
+const ELEVATOR_PAD = 3;
+/**
+ * The strip down the right edge the elevator owns.
+ *
+ * Exported because a host that puts the leaf labels in a DOM layer has to keep
+ * that layer out of it. The labels take pointer events — that is what makes
+ * them selectable — so a layer covering the whole canvas puts a span over the
+ * elevator, and dragging the thumb selects an accession instead of scrolling.
+ */
+export const ELEVATOR_RESERVE = ELEVATOR_W + 2 * ELEVATOR_PAD;
+/** Nothing shorter than this can be grabbed, however little of the tree is shown. */
+const ELEVATOR_MIN_THUMB = 24;
+
 /** Length of the caret that points at a selected tip. */
 const POINTER_LEN = 11;
 /**
@@ -801,6 +828,7 @@ export class TreeRenderer {
     this.drawTracks(m, rowH);
     this.drawOverflowBar(m);
     this.drawMinimap(m);
+    this.drawElevator(m);
 
     // A caret for each selected tip, once the selection is small enough that
     // pointing at them individually means something. At tens of thousands of
@@ -956,6 +984,14 @@ export class TreeRenderer {
   /** Draw now, synchronously — `requestDraw` schedules a frame tests cannot await. */
   drawForTest(): void {
     this.draw();
+  }
+
+  /** The elevator's track and thumb, for tests that need to grab it. */
+  elevatorForTest() {
+    const m = this.metrics();
+    if (!m) return null;
+    const b = this.elevatorBox(m);
+    return b ? { ...b, thumb: this.elevatorThumb(b) } : null;
   }
 
   /** The locator's box, for tests that need to click inside it. */
@@ -1169,6 +1205,135 @@ export class TreeRenderer {
       this.setView({ panX: this.width / 2 - PADDING - m.treeWidth * fx });
     }
     return true;
+  }
+
+  /** The elevator's track, or null when the whole tree is already on screen. */
+  private elevatorBox(m: RectMetrics): { x: number; y: number; w: number; h: number;
+                                         top: number; bottom: number } | null {
+    if (this.view.mode !== "rect" || !this.tree) return null;
+    const n = Math.max(1, this.tree.leaves.length);
+    const top = m.visibleLeafStart / n;
+    const bottom = m.visibleLeafEnd / n;
+    if (top <= 0 && bottom >= 1) return null;
+    return {
+      x: this.width - ELEVATOR_W - ELEVATOR_PAD,
+      y: ELEVATOR_PAD,
+      w: ELEVATOR_W,
+      h: Math.max(1, this.height - 2 * ELEVATOR_PAD),
+      top,
+      bottom,
+    };
+  }
+
+  /** The thumb, in screen y. Its own function so drawing and dragging agree. */
+  private elevatorThumb(b: { y: number; h: number; top: number; bottom: number }) {
+    const span = Math.max(ELEVATOR_MIN_THUMB / b.h, b.bottom - b.top);
+    // Clamping the span can push the thumb past the end, so the start is
+    // clamped against the span rather than against 1.
+    const start = Math.max(0, Math.min(1 - span, b.top));
+    return { y: b.y + start * b.h, h: span * b.h };
+  }
+
+  private drawElevator(m: RectMetrics): void {
+    if (this.exporting) return;
+    const b = this.elevatorBox(m);
+    if (!b) return;
+    const t = this.elevatorThumb(b);
+    const ctx = this.ctx;
+    const r = b.w / 2;
+    ctx.save();
+    ctx.fillStyle = this.style.textMuted;
+    ctx.globalAlpha = 0.1;
+    this.roundedBar(ctx, b.x, b.y, b.w, b.h, r);
+    ctx.globalAlpha = this.elevatorGrab ? 0.62 : 0.34;
+    this.roundedBar(ctx, b.x, t.y, b.w, t.h, r);
+    ctx.restore();
+  }
+
+  /** A capsule. `roundRect` is recent enough that the SVG recorder lacks it. */
+  private roundedBar(ctx: DrawTarget | CanvasRenderingContext2D,
+                     x: number, y: number, w: number, h: number, r: number): void {
+    const rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.lineTo(x + w - rad, y);
+    ctx.arc(x + w - rad, y + rad, rad, -Math.PI / 2, 0);
+    ctx.lineTo(x + w, y + h - rad);
+    ctx.arc(x + w - rad, y + h - rad, rad, 0, Math.PI / 2);
+    ctx.lineTo(x + rad, y + h);
+    ctx.arc(x + rad, y + h - rad, rad, Math.PI / 2, Math.PI);
+    ctx.lineTo(x, y + rad);
+    ctx.arc(x + rad, y + rad, rad, Math.PI, (3 * Math.PI) / 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /** True while the elevator is being dragged, so it can show it. */
+  private elevatorGrab = false;
+
+  /**
+   * True when a screen point is on the elevator.
+   *
+   * The whole track, not only the thumb: clicking the track above or below the
+   * thumb is how a scrollbar is used to move a page at a time, and refusing it
+   * would make the control look broken.
+   */
+  elevatorHit(sx: number, sy: number): boolean {
+    const m = this.metrics();
+    if (!m) return false;
+    const b = this.elevatorBox(m);
+    if (!b) return false;
+    return sx >= b.x - 3 && sx <= b.x + b.w + 3 && sy >= b.y && sy <= b.y + b.h;
+  }
+
+  /**
+   * Scroll so the elevator's thumb is centred on the pointer.
+   *
+   * Written from `elevatorThumb`'s own numbers, inverted — the same rule that
+   * keeps the locator's rectangle under the click that put it there.
+   */
+  elevatorGoTo(sy: number, grabbing = true): boolean {
+    const t = this.tree;
+    const m = this.metrics();
+    if (!t || !m) return false;
+    const b = this.elevatorBox(m);
+    if (!b) return false;
+    this.elevatorGrab = grabbing;
+
+    const thumb = this.elevatorThumb(b);
+    const travel = Math.max(1e-9, b.h - thumb.h);
+    const f = Math.max(0, Math.min(1, (sy - b.y - thumb.h / 2) / travel));
+    // `f` is where the TOP of the viewport should land, as a fraction of the
+    // rows that are not already visible — which is what a scrollbar means, and
+    // is why this is not simply "centre on the clicked row".
+    const n = t.leaves.length;
+    const shown = Math.max(1, m.visibleLeafEnd - m.visibleLeafStart);
+    const firstRow = f * Math.max(0, n - shown);
+    // `rowY` inverted for the top edge of the pane rather than its middle.
+    this.setView({ panY: (this.height / 2 - PADDING - m.sy * firstRow) * this.view.vZoom
+                         - this.height / 2 });
+    return true;
+  }
+
+  /** Let go, so the thumb goes quiet again. */
+  elevatorRelease(): void {
+    if (!this.elevatorGrab) return;
+    this.elevatorGrab = false;
+    this.requestDraw();
+  }
+
+  /**
+   * Scroll by a number of rows, for shift-wheel.
+   *
+   * In rows rather than pixels so the same gesture covers the same amount of
+   * tree at every zoom: a wheel notch that moves ten rows when they are thirty
+   * pixels tall has to move ten rows when they are one pixel tall, or scrolling
+   * a zoomed-out tree takes all afternoon.
+   */
+  scrollByRows(rows: number): void {
+    const m = this.metrics();
+    if (!m || !this.tree) return;
+    this.setView({ panY: this.view.panY - rows * m.sy * this.view.vZoom });
   }
 
   private drawOverflowBar(m: RectMetrics): void {
