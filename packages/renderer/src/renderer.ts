@@ -67,6 +67,20 @@ const TRACK_GAP = 6;
  * before overflow ever started. Set `treeWidth` to pin it instead.
  */
 const MIN_TREE_SHARE = 0.45;
+
+/**
+ * How much of the automatic width the tree actually takes.
+ *
+ * Filling every pixel left over is not the same as being readable. A tree
+ * stretched the full width of a pane spreads its branches so far apart that
+ * the shape of a clade — which is the thing being looked at — is harder to
+ * take in, not easier, and the room goes to branch length nobody is measuring
+ * off the screen. Two thirds reads better and leaves the columns beside it
+ * more room.
+ *
+ * Applied to the automatic width only. `treeWidth` means what it says.
+ */
+const AUTO_TREE_SHARE = 0.66;
 /** Narrowest a magnitude-carrying ring may be squeezed to. */
 const MIN_WIDE_RING = 30;
 
@@ -475,7 +489,7 @@ export class TreeRenderer {
     const pinned = this.style.treeWidth;
     if (pinned != null && pinned > 0) return Math.max(10, pinned);
     const left = pane - labelW - this.rawTrackWidth();
-    return Math.max(pane * MIN_TREE_SHARE, left);
+    return AUTO_TREE_SHARE * Math.max(pane * MIN_TREE_SHARE, left);
   }
 
   /** Screen metrics for the rectangular layout. */
