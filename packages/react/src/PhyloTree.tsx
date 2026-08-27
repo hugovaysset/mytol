@@ -420,10 +420,19 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     };
   }, [emitSelection, onHoverNode, onHoverTarget, onViewChange, onTrackClick]);
 
-  /** Wheel must be non-passive to preventDefault, so it is bound manually. */
+  /**
+   * Wheel must be non-passive to preventDefault, so it is bound manually.
+   *
+   * On the HOST, not the canvas. The leaf labels are DOM spans that take
+   * pointer events — that is what makes them selectable — and they are
+   * siblings of the canvas, not children of it. A listener on the canvas
+   * therefore never fires while the pointer is over a label, so neither zoom
+   * nor shift-scroll did anything in the whole label column.
+   */
   useEffect(() => {
+    const host = hostRef.current;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!host || !canvas) return;
     function onWheel(e: WheelEvent) {
       const r = rendererRef.current;
       if (!r) return;
@@ -441,8 +450,12 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
        */
       if (e.shiftKey) {
         const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-        // A line's worth per notch at 1x, scaled by how tall the rows are.
-        r.scrollByRows(d / 3);
+        // Rows in the rectangular layout, where a row is the unit that means
+        // something. The radial layouts have no rows to count, so there it is
+        // a plain pan — measuring those in rows moved the picture by a few
+        // pixels a notch, which reads exactly like nothing happening.
+        if (v.mode === "rect") r.scrollByRows(d / 3);
+        else r.setView({ panY: v.panY - d });
         onViewChange?.(r.getView());
         return;
       }
@@ -457,8 +470,8 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       r.setView(next);
       onViewChange?.(r.getView());
     }
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    return () => canvas.removeEventListener("wheel", onWheel);
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => host.removeEventListener("wheel", onWheel);
   }, [onViewChange]);
 
   const handleContextMenu = useCallback(
