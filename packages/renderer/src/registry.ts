@@ -86,14 +86,45 @@ export function spreadColors(n: number): string[] {
  * colour, the same colour in every session, without shipping a palette of
  * thousands of entries.
  */
+/**
+ * A fixed wheel of colours chosen to be told apart at a glance.
+ *
+ * The previous version mapped a hash to a **continuous** hue, which meant two
+ * keys could land three degrees apart and be indistinguishable — reported as
+ * "often colours are very similar and it's hard to spot that we are actually
+ * at two different protein families". A continuous space has no floor on how
+ * close two colours can be.
+ *
+ * So the space is quantised instead. Hues step by the golden angle, which
+ * spreads consecutive entries as far apart as a circle allows, and each turn
+ * around the wheel changes saturation and lightness together — so entries that
+ * do land on a similar hue differ in weight instead. Two families now either
+ * share a colour outright or clearly differ, and "clearly the same" is a much
+ * easier reading than "probably the same".
+ */
+const GOLDEN_ANGLE = 137.508;
+
+/** Saturation/lightness bands, walked once per turn of the hue wheel. */
+const HASH_BANDS: Array<[number, number]> = [
+  [70, 47], [52, 66], [86, 36], [63, 76], [78, 56], [45, 28],
+];
+
+export const HASH_WHEEL: string[] = (() => {
+  const out: string[] = [];
+  for (let i = 0; i < 240; i++) {
+    const [sat, light] = HASH_BANDS[Math.floor(i / 40) % HASH_BANDS.length];
+    out.push(hslToHex((i * GOLDEN_ANGLE) % 360, sat, light));
+  }
+  return out;
+})();
+
 export function hashColor(key: string): string {
   let h = 2166136261;
   for (let i = 0; i < key.length; i++) {
     h ^= key.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  const u = (h >>> 0) / 4294967296;
-  return hslToHex(u * 360, 55 + ((h >>> 8) & 31), 42 + ((h >>> 16) & 23));
+  return HASH_WHEEL[(h >>> 0) % HASH_WHEEL.length];
 }
 
 function hslToHex(h: number, s: number, l: number): string {
@@ -447,6 +478,8 @@ export interface LocusGene {
   self?: boolean;
   cluster?: number | null;
   pfam?: string | null;
+  /** The `PFxxxxx` accession, which is what InterPro is addressable by. */
+  pfam_acc?: string | null;
   df_type?: string | null;
   df_subtype?: string | null;
   df_gene?: string | null;
