@@ -2222,37 +2222,61 @@ describe("setHighlight only repaints when something changed", () => {
   });
 });
 
-describe("a wide track does not crush the tree", () => {
-  it("clamps the columns so the tree keeps its share of the canvas", () => {
-    // The locus track asks for hundreds of pixels, and `usableW` floors at 10.
-    // Reported as "it crushes all the rest that becomes tiny": one wide column
-    // in a narrow pane left the tree a sliver.
+describe("the tree and its annotation columns do not share a width budget", () => {
+  it("gives a wide column the width it asked for instead of shrinking it", () => {
+    // Reported twice. First as "it crushes all the rest that becomes tiny",
+    // then — after the columns were scaled to fit — as the columns changing
+    // size because of a column switched on somewhere else. A width the caller
+    // set has to be the width that is drawn.
     const { r } = makeRenderer(SIMPLE, 800, 600);
-    const bare = r.metricsForTest().trackWidth;
-    expect(bare).toBe(0);
+    expect(r.metricsForTest().trackWidth).toBe(0);
 
     r.setTracks([
       { type: "colorstrip", label: "wide", visible: true, width: 2000, values: [] },
     ] as never);
     const m = r.metricsForTest();
-
-    // Asked for 2000 in an 800px canvas; it must not get it.
-    expect(m.trackWidth).toBeLessThan(800 * 0.6);
-    expect(m.trackScale).toBeLessThan(1);
-    // And the tree must be left something a tree can be drawn in, not the
-    // ten-pixel floor.
-    const treeW = 800 - m.trackWidth;
-    expect(treeW).toBeGreaterThan(250);
+    expect(m.trackWidth).toBeCloseTo(2000 + 6, 0);
+    // Past the right edge of an 800px pane, which is what panning is for.
+    expect(m.contentWidth).toBeGreaterThan(800);
+    // And the tree keeps a floor rather than being taken to nothing.
+    expect(m.treeWidth).toBeGreaterThan(250);
   });
 
-  it("leaves a track that fits entirely alone", () => {
+  it("does not resize one column when another is switched on", () => {
+    const { r } = makeRenderer(SIMPLE, 800, 600);
+    const strip = { type: "colorstrip", label: "strip", visible: true, width: 140, values: [] };
+    r.setTracks([strip] as never);
+    const alone = r.metricsForTest().trackWidth;
+
+    r.setTracks([strip,
+      { type: "colorstrip", label: "locus", visible: true, width: 1200, values: [] },
+    ] as never);
+    const together = r.metricsForTest().trackWidth;
+    // The strip is unchanged; the whole of the second column was added to it.
+    expect(together - alone).toBeCloseTo(1200 + 6, 0);
+  });
+
+  it("keeps the branches still when a wide column is toggled, once pinned", () => {
+    // The reason `treeWidth` exists: comparing two states of the tree is only
+    // possible if turning a column on does not move every branch.
+    const { r } = makeRenderer(SIMPLE, 800, 600);
+    r.setStyle({ treeWidth: 300 } as never);
+    const before = r.metricsForTest();
+    r.setTracks([
+      { type: "colorstrip", label: "locus", visible: true, width: 1200, values: [] },
+    ] as never);
+    const after = r.metricsForTest();
+    expect(after.treeWidth).toBe(before.treeWidth);
+    expect(after.sx).toBeCloseTo(before.sx, 6);
+  });
+
+  it("still fits a narrow column inside the pane", () => {
     const { r } = makeRenderer(SIMPLE, 1600, 600);
     r.setTracks([
       { type: "colorstrip", label: "narrow", visible: true, width: 140, values: [] },
     ] as never);
     const m = r.metricsForTest();
-    expect(m.trackScale).toBe(1);
-    // width + the gap between the tree and the column
     expect(m.trackWidth).toBeCloseTo(146, 0);
+    expect(m.contentWidth).toBeLessThanOrEqual(1600);
   });
 });
