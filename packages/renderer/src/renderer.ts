@@ -50,12 +50,23 @@ const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
 
 /**
- * The most of the canvas width the annotation columns may take between them.
+ * The least of the pane the tree keeps for itself when widths are automatic.
  *
- * Without a cap the tree collapses to `usableW`'s ten-pixel floor and the
- * panel shows tracks beside a vertical line.
+ * The tree and the annotation columns do NOT share a width budget. A column
+ * asks for a width and gets it; what changes when the columns are wide is that
+ * the content grows past the right edge of the pane and you pan to reach it,
+ * exactly as a wide table scrolls.
+ *
+ * Scaling the columns down to fit instead — which is what this used to do —
+ * meant adding one 560px locus column silently shrank every other column and
+ * the tree with it, so a strip you had already set up changed size because of
+ * something you did elsewhere. Widths that move on their own cannot be tuned.
+ *
+ * This floor still exists because the automatic width is "whatever the columns
+ * leave", and without a floor a wide column would take the tree to nothing
+ * before overflow ever started. Set `treeWidth` to pin it instead.
  */
-const MAX_TRACK_SHARE = 0.55;
+const MIN_TREE_SHARE = 0.45;
 /** Narrowest a magnitude-carrying ring may be squeezed to. */
 const MIN_WIDE_RING = 30;
 
@@ -78,8 +89,10 @@ export interface RectMetrics {
   originY: number;
   trackStartX: number;
   trackWidth: number;
-  /** Factor applied to every track's width so the tree keeps its share. */
-  trackScale: number;
+  /** Horizontal extent of the tree itself, in px. */
+  treeWidth: number;
+  /** Rightmost pixel any column reaches; past `width` when the pane overflows. */
+  contentWidth: number;
   visibleLeafStart: number;
   visibleLeafEnd: number;
 }
@@ -405,26 +418,19 @@ export class TreeRenderer {
   }
 
   /**
-   * How much the tracks are shrunk so the tree survives them.
+   * Horizontal extent of the tree, which no annotation column can take from.
    *
-   * Track width came straight off the layout budget, and `usableW` floors at
-   * ten pixels — so a wide track did not merely take room, it crushed the tree
-   * to a sliver and took the labels with it. One 560 px locus column in a 900
-   * px pane left the tree about 300; two of them left nothing.
-   *
-   * Tracks are scaled together rather than dropped or clipped: the column is
-   * still the same picture, just smaller, and the caller's own width control
-   * still does something at every setting instead of silently hitting a wall.
+   * Pinned by `style.treeWidth` when the host sets one. Otherwise it is
+   * whatever the columns leave, floored at `MIN_TREE_SHARE` — so narrow
+   * columns still sit snugly beside a tree that fills the pane, and wide ones
+   * push the content past the right edge rather than squeezing the tree.
    */
-  private trackScale(W: number): number {
-    const raw = this.rawTrackWidth();
-    if (raw <= 0) return 1;
-    const cap = Math.max(0, W - 2 * PADDING) * MAX_TRACK_SHARE;
-    return raw > cap ? cap / raw : 1;
-  }
-
-  private effectiveTrackWidth(): number {
-    return this.rawTrackWidth() * this.trackScale(this.width);
+  private treeSpan(W: number, labelW: number): number {
+    const pane = Math.max(10, W - 2 * PADDING);
+    const pinned = this.style.treeWidth;
+    if (pinned != null && pinned > 0) return Math.max(10, pinned);
+    const left = pane - labelW - this.rawTrackWidth();
+    return Math.max(pane * MIN_TREE_SHARE, left);
   }
 
   /** Screen metrics for the rectangular layout. */
@@ -432,7 +438,7 @@ export class TreeRenderer {
     if (!this.tree || !this.rect) return null;
     const W = this.width;
     const H = this.height;
-    const trackWidth = this.effectiveTrackWidth();
+    const trackWidth = this.rawTrackWidth();
 
     // Vertical scale does not depend on the horizontal budget, so it can be
     // settled first — which lets the label reserve be conditional rather than
@@ -442,8 +448,8 @@ export class TreeRenderer {
     const labelsWillDraw = this.style.showLeafLabels && sy * this.view.vZoom >= LABEL_MIN_ROW_PX;
     const labelW = labelsWillDraw ? LABEL_RESERVE_PX : 0;
 
-    const usableW = Math.max(10, W - 2 * PADDING - trackWidth - labelW);
-    const sx = usableW / Math.max(1e-9, this.rect.fitX);
+    const treeWidth = this.treeSpan(W, labelW);
+    const sx = treeWidth / Math.max(1e-9, this.rect.fitX);
 
     const originX = -W / 2 + PADDING;
     const originY = -H / 2 + PADDING;
@@ -476,7 +482,8 @@ export class TreeRenderer {
       originY,
       trackStartX,
       trackWidth,
-      trackScale: this.trackScale(W),
+      treeWidth,
+      contentWidth: PADDING + treeWidth + (trackWidth > 0 ? TRACK_GAP + trackWidth : labelW) + PADDING,
       visibleLeafStart,
       visibleLeafEnd,
     };
@@ -732,6 +739,7 @@ export class TreeRenderer {
     }
 
     this.drawTracks(m, rowH);
+    this.drawOverflowBar(m);
 
     // A caret for each selected tip, once the selection is small enough that
     // pointing at them individually means something. At tens of thousands of
@@ -909,6 +917,40 @@ export class TreeRenderer {
     return this.height / 2 + this.view.panY + wy * this.view.vZoom;
   }
 
+  /**
+   * A hint that the columns continue past the right edge, and how far.
+   *
+   * The tree and its columns no longer share a width budget, which means a
+   * wide column runs off the pane instead of squeezing everything to fit.
+   * That is the intended behaviour, but without a mark on the canvas it is
+   * indistinguishable from a column that has simply been cut off: the reader
+   * has no way to know there is more, or that dragging sideways reaches it.
+   *
+   * Drawn, not a DOM scrollbar, because the thing that scrolls is `panX`
+   * inside the canvas and a real scrollbar would need the two kept in step.
+   * An indicator cannot drift out of agreement with what is on screen.
+   */
+  private drawOverflowBar(m: RectMetrics): void {
+    const left = this.view.panX + PADDING;
+    const right = m.trackWidth > 0 ? m.trackStartX + m.trackWidth : left + m.treeWidth;
+    const total = right - left;
+    if (total <= this.width + 1) return;
+
+    const H = 5;
+    const y = this.height - H - 1;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = this.style.text;
+    ctx.fillRect(0, y, this.width, H);
+    ctx.globalAlpha = 0.5;
+    // Where the pane currently sits within the content, in content units.
+    const from = Math.max(0, Math.min(1, -left / total));
+    const to = Math.max(0, Math.min(1, (this.width - left) / total));
+    ctx.fillRect(from * this.width, y, Math.max(14, (to - from) * this.width), H);
+    ctx.restore();
+  }
+
   private drawTracks(m: RectMetrics, rowH: number): void {
     if (!this.tracks.length) return;
     const ctx = this.ctx;
@@ -924,7 +966,7 @@ export class TreeRenderer {
       if (!track.visible) continue;
       const def = getTrack(track.type);
       if (!def) continue;
-      const w = (track.width ?? def.width) * m.trackScale;
+      const w = track.width ?? def.width;
 
       // Header. Columns are ~18px wide and names are not, so headers alternate
       // between two rows and each is allowed to run over its neighbour's

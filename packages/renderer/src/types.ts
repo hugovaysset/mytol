@@ -88,6 +88,17 @@ export interface StyleTokens {
   colorBySupport: boolean;
 
   /**
+   * Horizontal extent of the tree in px, or null to let it take whatever the
+   * annotation columns leave.
+   *
+   * Pinning it makes the tree's width a property of the tree rather than a
+   * consequence of which columns happen to be switched on: turn a wide locus
+   * column on and off and the branches stay exactly where they were, which is
+   * what makes it possible to compare two screenshots at all.
+   */
+  treeWidth: number | null;
+
+  /**
    * Colour ramp for branch support, low to high.
    *
    * Three stops rather than two: support is not uniformly distributed — most
@@ -128,6 +139,7 @@ export function defaultStyle(): StyleTokens {
     lodMinPx: 1.5,
     showLeafLabels: true,
     showSupport: false,
+    treeWidth: null,
     // On by default. Support is the first thing you want to know about a
     // branch before believing anything the topology says, and a tree drawn in
     // one flat colour quietly invites you to trust every split equally.
