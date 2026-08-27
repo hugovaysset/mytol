@@ -78,6 +78,12 @@ export interface PhyloTreeProps {
   selection?: SelectionState;
   onSelectionChange?(next: SelectionState): void;
   onViewChange?(next: ViewState): void;
+  /**
+   * A click that landed in an annotation column.
+   *
+   * Return true to claim it — the click then does not also select a leaf.
+   */
+  onTrackClick?(hover: TrackHover): boolean | void;
   onHoverNode?(nodeId: number): void;
   /** Richer hover, including annotation tracks. Fires on every move. */
   onHoverTarget?(target: HoverTarget | null): void;
@@ -112,6 +118,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     selection,
     onSelectionChange,
     onViewChange,
+    onTrackClick,
     onHoverNode,
     onHoverTarget,
     onContextMenu,
@@ -344,7 +351,16 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       dragRef.current = null;
       if (!drag || drag.moved || !r || !t) return;
 
-      // a click, not a drag
+      // a click, not a drag.
+      //
+      // A click that lands in an annotation column is about that column, not
+      // about the tree: selecting a leaf because someone clicked a gene arrow
+      // beside it would be an answer to a question they did not ask. So the
+      // track gets first refusal, and only an unclaimed click falls through to
+      // picking a node.
+      const overTrack = r.trackAt(p.x, p.y);
+      if (overTrack && onTrackClick?.(overTrack)) return;
+
       const hit = r.pick(p.x, p.y);
       emitSelection(applyClick(t, selRef.current, hit, { additive: e.metaKey || e.ctrlKey }));
     }
@@ -355,7 +371,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [emitSelection, onHoverNode, onHoverTarget, onViewChange]);
+  }, [emitSelection, onHoverNode, onHoverTarget, onViewChange, onTrackClick]);
 
   /** Wheel must be non-passive to preventDefault, so it is bound manually. */
   useEffect(() => {
