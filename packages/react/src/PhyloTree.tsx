@@ -13,6 +13,7 @@ import { useCallback, useEffect, useImperativeHandle, useRef, forwardRef } from 
 import type { Tree } from "@mytol/core";
 import {
   TreeRenderer,
+  ELEVATOR_RESERVE,
   type ViewState,
   type StyleTokens,
   type TrackInstance,
@@ -140,6 +141,8 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
   const boxRef = useRef<{ fromLeaf: number; toLeaf: number } | null>(null);
   /** True while a drag started inside the locator, which navigates rather than pans. */
   const mapRef = useRef(false);
+  /** True while the elevator's thumb is being dragged. */
+  const liftRef = useRef(false);
 
   selRef.current = selection ?? selRef.current;
   treeRef.current = tree;
@@ -247,6 +250,12 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       onViewChange?.(r.getView());
       return;
     }
+    if (r?.elevatorHit(p.x, p.y)) {
+      liftRef.current = true;
+      r.elevatorGoTo(p.y);
+      onViewChange?.(r.getView());
+      return;
+    }
     if (e.shiftKey) {
       const leaf = r?.leafIndexAt(p.y) ?? -1;
       boxRef.current = { fromLeaf: leaf, toLeaf: leaf };
@@ -270,6 +279,11 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       // this is expected to behave and costs nothing on top of the click.
       if (mapRef.current) {
         r.minimapGoTo(p.x, p.y);
+        onViewChange?.(r.getView());
+        return;
+      }
+      if (liftRef.current) {
+        r.elevatorGoTo(p.y);
         onViewChange?.(r.getView());
         return;
       }
@@ -365,6 +379,11 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
         mapRef.current = false;
         return;
       }
+      if (liftRef.current) {
+        liftRef.current = false;
+        r?.elevatorRelease();
+        return;
+      }
 
       if (boxRef.current && r && t) {
         const { fromLeaf, toLeaf } = boxRef.current;
@@ -411,6 +430,22 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       e.preventDefault();
       const rect = canvas!.getBoundingClientRect();
       const v = r.getView();
+      /*
+       * Shift scrolls instead of zooming.
+       *
+       * Zoom stays on the bare wheel because it is what the tree is mostly
+       * driven by, and a modifier on the common gesture would be the wrong way
+       * round. `deltaX` as well as `deltaY`: with shift held, some browsers
+       * report a vertical wheel on the horizontal axis, and a scroll that does
+       * nothing on half the mice is worse than no scroll at all.
+       */
+      if (e.shiftKey) {
+        const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        // A line's worth per notch at 1x, scaled by how tall the rows are.
+        r.scrollByRows(d / 3);
+        onViewChange?.(r.getView());
+        return;
+      }
       const next = applyWheelZoom(
         v.mode,
         v,
@@ -541,7 +576,14 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
         className="mytol-leaf-labels"
         style={{
           position: "absolute",
-          inset: 0,
+          top: 0,
+          left: 0,
+          bottom: 0,
+          // Everything but the strip the elevator owns. The spans take pointer
+          // events, so a layer over the whole canvas puts a label on top of
+          // the thumb and dragging it selects an accession instead of
+          // scrolling — which is exactly what happened.
+          right: ELEVATOR_RESERVE,
           pointerEvents: "none",
           overflow: "hidden",
         }}
