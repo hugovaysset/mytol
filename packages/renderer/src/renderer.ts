@@ -48,6 +48,14 @@ const LABEL_RESERVE_PX = 150;
 const LABEL_MIN_ROW_PX = 7;
 const MIN_EDGE_PIXELS = 0.5;
 const TRACK_GAP = 6;
+
+/**
+ * The most of the canvas width the annotation columns may take between them.
+ *
+ * Without a cap the tree collapses to `usableW`'s ten-pixel floor and the
+ * panel shows tracks beside a vertical line.
+ */
+const MAX_TRACK_SHARE = 0.55;
 /** Narrowest a magnitude-carrying ring may be squeezed to. */
 const MIN_WIDE_RING = 30;
 
@@ -70,6 +78,8 @@ export interface RectMetrics {
   originY: number;
   trackStartX: number;
   trackWidth: number;
+  /** Factor applied to every track's width so the tree keeps its share. */
+  trackScale: number;
   visibleLeafStart: number;
   visibleLeafEnd: number;
 }
@@ -382,7 +392,8 @@ export class TreeRenderer {
 
   // -- geometry --------------------------------------------------------------
 
-  private effectiveTrackWidth(): number {
+  /** What the visible tracks ask for, before any clamp. */
+  private rawTrackWidth(): number {
     let total = 0;
     for (const t of this.tracks) {
       if (!t.visible) continue;
@@ -391,6 +402,29 @@ export class TreeRenderer {
       total += (t.width ?? def.width) + TRACK_GAP;
     }
     return total;
+  }
+
+  /**
+   * How much the tracks are shrunk so the tree survives them.
+   *
+   * Track width came straight off the layout budget, and `usableW` floors at
+   * ten pixels — so a wide track did not merely take room, it crushed the tree
+   * to a sliver and took the labels with it. One 560 px locus column in a 900
+   * px pane left the tree about 300; two of them left nothing.
+   *
+   * Tracks are scaled together rather than dropped or clipped: the column is
+   * still the same picture, just smaller, and the caller's own width control
+   * still does something at every setting instead of silently hitting a wall.
+   */
+  private trackScale(W: number): number {
+    const raw = this.rawTrackWidth();
+    if (raw <= 0) return 1;
+    const cap = Math.max(0, W - 2 * PADDING) * MAX_TRACK_SHARE;
+    return raw > cap ? cap / raw : 1;
+  }
+
+  private effectiveTrackWidth(): number {
+    return this.rawTrackWidth() * this.trackScale(this.width);
   }
 
   /** Screen metrics for the rectangular layout. */
@@ -442,6 +476,7 @@ export class TreeRenderer {
       originY,
       trackStartX,
       trackWidth,
+      trackScale: this.trackScale(W),
       visibleLeafStart,
       visibleLeafEnd,
     };
@@ -889,7 +924,7 @@ export class TreeRenderer {
       if (!track.visible) continue;
       const def = getTrack(track.type);
       if (!def) continue;
-      const w = track.width ?? def.width;
+      const w = (track.width ?? def.width) * m.trackScale;
 
       // Header. Columns are ~18px wide and names are not, so headers alternate
       // between two rows and each is allowed to run over its neighbour's

@@ -2221,3 +2221,38 @@ describe("setHighlight only repaints when something changed", () => {
     expect(seen.n).toBe(1);
   });
 });
+
+describe("a wide track does not crush the tree", () => {
+  it("clamps the columns so the tree keeps its share of the canvas", () => {
+    // The locus track asks for hundreds of pixels, and `usableW` floors at 10.
+    // Reported as "it crushes all the rest that becomes tiny": one wide column
+    // in a narrow pane left the tree a sliver.
+    const { r } = makeRenderer(SIMPLE, 800, 600);
+    const bare = r.metricsForTest().trackWidth;
+    expect(bare).toBe(0);
+
+    r.setTracks([
+      { type: "colorstrip", label: "wide", visible: true, width: 2000, values: [] },
+    ] as never);
+    const m = r.metricsForTest();
+
+    // Asked for 2000 in an 800px canvas; it must not get it.
+    expect(m.trackWidth).toBeLessThan(800 * 0.6);
+    expect(m.trackScale).toBeLessThan(1);
+    // And the tree must be left something a tree can be drawn in, not the
+    // ten-pixel floor.
+    const treeW = 800 - m.trackWidth;
+    expect(treeW).toBeGreaterThan(250);
+  });
+
+  it("leaves a track that fits entirely alone", () => {
+    const { r } = makeRenderer(SIMPLE, 1600, 600);
+    r.setTracks([
+      { type: "colorstrip", label: "narrow", visible: true, width: 140, values: [] },
+    ] as never);
+    const m = r.metricsForTest();
+    expect(m.trackScale).toBe(1);
+    // width + the gap between the tree and the column
+    expect(m.trackWidth).toBeCloseTo(146, 0);
+  });
+});
