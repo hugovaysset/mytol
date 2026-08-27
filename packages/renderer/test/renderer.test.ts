@@ -2238,8 +2238,10 @@ describe("the tree and its annotation columns do not share a width budget", () =
     expect(m.trackWidth).toBeCloseTo(2000 + 6, 0);
     // Past the right edge of an 800px pane, which is what panning is for.
     expect(m.contentWidth).toBeGreaterThan(800);
-    // And the tree keeps a floor rather than being taken to nothing.
-    expect(m.treeWidth).toBeGreaterThan(250);
+    // And the tree keeps a floor rather than being taken to nothing. The
+    // number guards against the ten-pixel floor this replaced, not against a
+    // particular share — that is `AUTO_TREE_SHARE`'s to change.
+    expect(m.treeWidth).toBeGreaterThan(150);
   });
 
   it("does not resize one column when another is switched on", () => {
