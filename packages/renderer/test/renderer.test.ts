@@ -1883,9 +1883,12 @@ describe("finding a selected tip", () => {
     r.setHighlight({ selection: new Set([2000]) });
     calls.rects.length = 0;
     r.draw();
-    // A full-width one-pixel bar starting at the left edge: nothing else drawn
-    // in this layout has that shape.
-    const guide = calls.rects.find((q) => q.x === 0 && q.h === 1 && q.w > 300);
+    // A one-pixel bar from the left edge, running past the tree to the caret:
+    // nothing else drawn in this layout has that shape. Measured against the
+    // tree's own width rather than a constant, so narrowing the default tree
+    // does not break a test that was never about how wide the tree is.
+    const m = r.metricsForTest();
+    const guide = calls.rects.find((q) => q.x === 0 && q.h === 1 && q.w > m.treeWidth);
     expect(guide).toBeDefined();
   });
 
@@ -2240,8 +2243,9 @@ describe("the tree and its annotation columns do not share a width budget", () =
     expect(m.contentWidth).toBeGreaterThan(800);
     // And the tree keeps a floor rather than being taken to nothing. The
     // number guards against the ten-pixel floor this replaced, not against a
-    // particular share — that is `AUTO_TREE_SHARE`'s to change.
-    expect(m.treeWidth).toBeGreaterThan(150);
+    // particular share — that is `AUTO_TREE_SHARE`'s to change. This is the
+    // worst case the floor exists for: a 2,000px column in an 800px pane.
+    expect(m.treeWidth).toBeGreaterThan(100);
   });
 
   it("does not resize one column when another is switched on", () => {
