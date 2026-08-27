@@ -75,12 +75,13 @@ const MIN_TREE_SHARE = 0.45;
  * stretched the full width of a pane spreads its branches so far apart that
  * the shape of a clade — which is the thing being looked at — is harder to
  * take in, not easier, and the room goes to branch length nobody is measuring
- * off the screen. Two thirds reads better and leaves the columns beside it
- * more room.
+ * off the screen. A third reads better and leaves the columns beside it far
+ * more room. Two thirds was the first attempt and was still too wide.
  *
- * Applied to the automatic width only. `treeWidth` means what it says.
+ * Applied to the automatic width only. `treeWidth` means what it says, and is
+ * the way back to a wide tree for anyone who wants one.
  */
-const AUTO_TREE_SHARE = 0.66;
+const AUTO_TREE_SHARE = 0.33;
 /** Narrowest a magnitude-carrying ring may be squeezed to. */
 const MIN_WIDE_RING = 30;
 
