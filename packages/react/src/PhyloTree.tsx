@@ -80,6 +80,14 @@ export interface PhyloTreeProps {
   onSelectionChange?(next: SelectionState): void;
   onViewChange?(next: ViewState): void;
   /**
+   * A shift-wheel happened; `moved` says whether it could do anything.
+   *
+   * Worth surfacing rather than swallowing: `vZoom` is not usually persisted,
+   * so a fresh load starts with every row on screen, and the first thing a
+   * user tries the shortcut on is exactly the state where it can do nothing.
+   */
+  onVerticalScroll?(moved: boolean): void;
+  /**
    * A click that landed in an annotation column.
    *
    * Return true to claim it — the click then does not also select a leaf.
@@ -119,6 +127,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     selection,
     onSelectionChange,
     onViewChange,
+    onVerticalScroll,
     onTrackClick,
     onHoverNode,
     onHoverTarget,
@@ -450,13 +459,12 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
        */
       if (e.shiftKey) {
         const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-        // Rows in the rectangular layout, where a row is the unit that means
-        // something. The radial layouts have no rows to count, so there it is
-        // a plain pan — measuring those in rows moved the picture by a few
-        // pixels a notch, which reads exactly like nothing happening.
-        if (v.mode === "rect") r.scrollByRows(d / 3);
-        else r.setView({ panY: v.panY - d });
-        onViewChange?.(r.getView());
+        // Reported either way. Silence when there is nowhere to go is
+        // indistinguishable from a broken shortcut — and a host that says so
+        // has to be told when it starts working again, or the notice sticks.
+        const moved = r.scrollByPixels(d);
+        if (moved) onViewChange?.(r.getView());
+        onVerticalScroll?.(moved);
         return;
       }
       const next = applyWheelZoom(
@@ -472,7 +480,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     }
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => host.removeEventListener("wheel", onWheel);
-  }, [onViewChange]);
+  }, [onViewChange, onVerticalScroll]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {

@@ -2475,18 +2475,40 @@ describe("the elevator", () => {
     expect(end.visibleLeafStart).toBeGreaterThan(4000 - shown - 4);
   });
 
-  it("scrolls the same number of rows at any zoom", () => {
-    // The point of scrolling in rows rather than pixels: one notch has to
-    // cover the same amount of tree whether a row is thirty pixels or one.
+  it("scrolls by pixels, so a notch is the same gesture at any zoom", () => {
+    // Rows sound right — the same amount of tree per notch at every zoom — and
+    // are wrong in the direction that matters: eighty rows is a leap across
+    // the screen when three are visible and invisible when forty thousand are.
     const { r } = makeRenderer(many(), 900, 700);
-    const moved = (zoom: number) => {
+    const px = (zoom: number) => {
       r.setView({ vZoom: zoom, panY: 0 });
-      const before = r.metricsForTest().visibleLeafStart;
-      r.scrollByRows(200);
-      return r.metricsForTest().visibleLeafStart - before;
+      const before = r.getView().panY;
+      r.scrollByPixels(120);
+      return before - r.getView().panY;
     };
-    expect(moved(40)).toBeCloseTo(200, 0);
-    expect(moved(8)).toBeCloseTo(200, 0);
+    expect(px(40)).toBeCloseTo(120, 0);
+    expect(px(8)).toBeCloseTo(120, 0);
+  });
+
+  it("does nothing, and says so, when the whole tree is already on screen", () => {
+    // The state every fresh load is in: `vZoom` is not persisted, so the first
+    // thing the shortcut is tried on is the one view where it can do nothing.
+    // Reported as "still not working", and it was not wrong.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 1, panY: 0 });
+    expect(r.canScrollVertically()).toBe(false);
+    expect(r.scrollByPixels(120)).toBe(false);
+    expect(r.getView().panY).toBe(0);
+  });
+
+  it("cannot be scrolled off into empty space", () => {
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40, panY: 0 });
+    for (let i = 0; i < 200; i++) r.scrollByPixels(500);
+    const bottom = r.metricsForTest();
+    expect(bottom.visibleLeafEnd).toBe(4000);
+    for (let i = 0; i < 400; i++) r.scrollByPixels(-500);
+    expect(r.metricsForTest().visibleLeafStart).toBe(0);
   });
 
   it("is not drawn into an export", () => {

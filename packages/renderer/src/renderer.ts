@@ -1323,17 +1323,58 @@ export class TreeRenderer {
   }
 
   /**
-   * Scroll by a number of rows, for shift-wheel.
+   * How far `panY` may travel before the tree comes away from the pane edges.
    *
-   * In rows rather than pixels so the same gesture covers the same amount of
-   * tree at every zoom: a wheel notch that moves ten rows when they are thirty
-   * pixels tall has to move ten rows when they are one pixel tall, or scrolling
-   * a zoomed-out tree takes all afternoon.
+   * Null when the whole tree already fits, which is the state a fresh load is
+   * in: `vZoom` is not persisted, so every reload starts with forty thousand
+   * rows squeezed into the pane and nothing to scroll. Shift-wheel there
+   * correctly did nothing, and correctly looked broken — the caller needs to
+   * be able to tell the two apart and say so.
    */
-  scrollByRows(rows: number): void {
+  private panYRange(): { min: number; max: number } | null {
     const m = this.metrics();
-    if (!m || !this.tree) return;
-    this.setView({ panY: this.view.panY - rows * m.sy * this.view.vZoom });
+    const t = this.tree;
+    if (!m || !t || this.view.mode !== "rect") return null;
+    const H = this.height;
+    const z = this.view.vZoom;
+    const n = Math.max(1, t.leaves.length);
+    // `rowY` solved for the first and last rows sitting on the pane's edges.
+    const max = (H / 2 - PADDING) * (z - 1);
+    const min = (H - PADDING) - H / 2 - (-H / 2 + PADDING + m.sy * (n - 1)) * z;
+    return min >= max ? null : { min, max };
+  }
+
+  /** True when there is anywhere for a vertical scroll to go. */
+  canScrollVertically(): boolean {
+    return this.view.mode !== "rect" || this.panYRange() !== null;
+  }
+
+  /**
+   * Scroll vertically by pixels. Returns whether the view actually moved.
+   *
+   * Pixels, not rows. Rows sound right — the same gesture covering the same
+   * amount of tree at every zoom — but they are wrong in the direction that
+   * matters: a notch worth eighty rows is a leap across the screen when three
+   * rows are visible, and invisible when forty thousand are. A pixel is the
+   * unit the wheel is already speaking in, and it is what every other
+   * scrollable surface moves by.
+   *
+   * Clamped, so the tree cannot be scrolled off into empty space — which a
+   * plain drag can still do deliberately, and which a scroll gesture should
+   * not do by accident.
+   */
+  scrollByPixels(px: number): boolean {
+    if (this.view.mode !== "rect") {
+      this.setView({ panY: this.view.panY - px });
+      return true;
+    }
+    const range = this.panYRange();
+    if (!range) return false;
+    const want = this.view.panY - px;
+    const next = Math.max(range.min, Math.min(range.max, want));
+    if (Math.abs(next - this.view.panY) < 0.5) return false;
+    this.setView({ panY: next });
+    return true;
   }
 
   private drawOverflowBar(m: RectMetrics): void {
