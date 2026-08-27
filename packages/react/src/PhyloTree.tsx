@@ -130,6 +130,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const labelsRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<TreeRenderer | null>(null);
 
   // Live copies for event handlers, which are registered once.
@@ -137,6 +138,8 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
   const treeRef = useRef<Tree | null>(tree);
   const dragRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const boxRef = useRef<{ fromLeaf: number; toLeaf: number } | null>(null);
+  /** True while a drag started inside the locator, which navigates rather than pans. */
+  const mapRef = useRef(false);
 
   selRef.current = selection ?? selRef.current;
   treeRef.current = tree;
@@ -148,7 +151,9 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
     if (!canvas) return;
     const r = new TreeRenderer(canvas);
     rendererRef.current = r;
+    r.setLabelLayer(labelsRef.current);
     return () => {
+      r.setLabelLayer(null);
       r.dispose();
       rendererRef.current = null;
     };
@@ -233,14 +238,22 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const p = localPoint(e);
+    const r = rendererRef.current;
+    // The locator first: a press inside it means "go there", and treating it
+    // as the start of a pan would drag the tree instead of jumping to it.
+    if (r?.minimapHit(p.x, p.y)) {
+      mapRef.current = true;
+      r.minimapGoTo(p.x, p.y);
+      onViewChange?.(r.getView());
+      return;
+    }
     if (e.shiftKey) {
-      const r = rendererRef.current;
       const leaf = r?.leafIndexAt(p.y) ?? -1;
       boxRef.current = { fromLeaf: leaf, toLeaf: leaf };
     } else {
       dragRef.current = { x: p.x, y: p.y, moved: false };
     }
-  }, []);
+  }, [onViewChange]);
 
   /**
    * Move and up are bound to the window, not the canvas, so a drag that leaves
@@ -252,6 +265,14 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       const r = rendererRef.current;
       if (!r) return;
       const p = localPoint(e);
+
+      // Dragging inside the locator scrubs the view, which is how a map like
+      // this is expected to behave and costs nothing on top of the click.
+      if (mapRef.current) {
+        r.minimapGoTo(p.x, p.y);
+        onViewChange?.(r.getView());
+        return;
+      }
 
       if (boxRef.current) {
         const leaf = r.leafIndexAt(p.y);
@@ -337,6 +358,13 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
       const r = rendererRef.current;
       const t = treeRef.current;
       const p = localPoint(e);
+
+      // A press that started in the locator has already done its work, and
+      // must not fall through to the click handler and select a leaf.
+      if (mapRef.current) {
+        mapRef.current = false;
+        return;
+      }
 
       if (boxRef.current && r && t) {
         const { fromLeaf, toLeaf } = boxRef.current;
@@ -501,6 +529,22 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
         onContextMenu={handleContextMenu}
         onDoubleClick={handleDoubleClick}
         onMouseLeave={handleMouseLeave}
+      />
+      {/* Leaf labels, as real text.
+          The renderer writes into this layer instead of painting them, so an
+          accession you can read is one you can select and copy. The container
+          takes no pointer events — dragging anywhere but on a label still pans
+          the tree — while the spans themselves do, which is what makes a
+          selection possible at all. */}
+      <div
+        ref={labelsRef}
+        className="mytol-leaf-labels"
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          overflow: "hidden",
+        }}
       />
     </div>
   );

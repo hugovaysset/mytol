@@ -426,24 +426,35 @@ registerTrack("domains", {
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const rec = track.values?.[leafIndex] as DomainRecord | undefined;
     if (!rec || !rec.length) return;
-    // One scale for the whole column when the caller supplies the longest
-    // protein. Scaling each cell to its own length would draw every
+    // One scale for the whole column when the caller supplies a reference
+    // length. Scaling each cell to its own length would draw every
     // architecture the same width and destroy the comparison the track is for.
+    //
+    // The reference does not have to be the longest protein present, and
+    // usually should not be: on a family whose tail runs to 3,000 residues a
+    // median 800-residue protein drew across a quarter of the column and the
+    // other three quarters were blank — which reads as a gap before the next
+    // column rather than as "these proteins are short". The caller picks the
+    // reference; anything past it is clipped and marked.
     const full = track.vmax && track.vmax > 0 ? track.vmax : rec.length;
     const scale = w / full;
     const midY = y + h / 2;
+    const clipped = rec.length > full;
 
     // The backbone IS the protein, so it runs to the protein's own length on
     // the shared scale. Drawing it full-width made every protein look the same
     // size and left only the domain boxes carrying any length information.
-    const backbone = Math.max(1, rec.length * scale);
+    const backbone = Math.min(w, Math.max(1, rec.length * scale));
     ctx.fillStyle = "#bbb";
     ctx.fillRect(x, midY - Math.max(0.5, h * 0.06), backbone, Math.max(1, h * 0.12));
 
     const boxH = Math.max(2, h * 0.7);
     for (const d of rec.domains ?? []) {
       const dx = x + d.start * scale;
-      const dw = Math.max(1, (d.end - d.start) * scale);
+      if (dx >= x + w) continue;
+      // Clipped to the column, so a domain running past the reference length
+      // cannot be drawn over the next column.
+      const dw = Math.min(x + w - dx, Math.max(1, (d.end - d.start) * scale));
       ctx.fillStyle = track.palette?.[d.name] ?? "#888";
       ctx.fillRect(dx, midY - boxH / 2, dw, boxH);
       if (dw > 22 && boxH >= 8) {
@@ -457,6 +468,16 @@ registerTrack("domains", {
         ctx.fillText(d.name, dx + 2, midY);
         ctx.restore();
       }
+    }
+
+    // A protein longer than the reference is cut, and has to say so. Without
+    // the mark a clipped architecture is indistinguishable from one that
+    // happens to end exactly at the column edge, which is the reading that
+    // makes a truncated protein look complete.
+    if (clipped && h >= 3) {
+      ctx.fillStyle = "#5a6270";
+      ctx.fillRect(x + w - 1.5, midY - Math.max(1.5, h * 0.35), 1.5,
+                   Math.max(3, h * 0.7));
     }
   },
   legend(track) {

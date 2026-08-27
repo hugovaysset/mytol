@@ -2280,3 +2280,135 @@ describe("the tree and its annotation columns do not share a width budget", () =
     expect(m.contentWidth).toBeLessThanOrEqual(1600);
   });
 });
+
+describe("the locator", () => {
+  /** A tree big enough that a screen cannot hold it, which is when it appears. */
+  const many = () => {
+    const tips = Array.from({ length: 4000 }, (_, i) => `t${i}:0.1`);
+    return `(${tips.join(",")});`;
+  };
+
+  it("stays out of the way while the whole tree is on screen", () => {
+    const { r } = makeRenderer(SIMPLE, 900, 700);
+    expect(r.minimapHit(20, 660)).toBe(false);
+  });
+
+  it("appears once the view holds only part of the tree", () => {
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    expect(r.minimapHit(20, 620)).toBe(true);
+    // And not somewhere else in the pane.
+    expect(r.minimapHit(600, 300)).toBe(false);
+  });
+
+  it("puts the viewport where the click was", () => {
+    // The round trip that matters: draw and pick are two expressions of one
+    // geometry, and this codebase has had that bug twice. Clicking a third of
+    // the way down the locator has to leave the marked band over that third.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const box = r.mapBoxForTest();
+    expect(box).not.toBeNull();
+    for (const f of [0.15, 0.4, 0.75]) {
+      r.minimapGoTo(box!.x + box!.w / 2, box!.y + f * box!.h);
+      const v = r.viewFractionForTest();
+      const mid = (v.top + v.bottom) / 2;
+      expect(Math.abs(mid - f)).toBeLessThan(0.02);
+    }
+  });
+
+  it("leaves the horizontal alone when the tree already fits across", () => {
+    // Every click would otherwise drag a fitted tree off centre for no reason.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const before = r.getView().panX;
+    const box = r.mapBoxForTest()!;
+    r.minimapGoTo(box.x + box.w * 0.8, box.y + box.h * 0.5);
+    expect(r.getView().panX).toBe(before);
+  });
+
+  it("is not drawn into an export", () => {
+    // It is furniture from the application, not part of the figure.
+    const { r } = makeRenderer(many(), 900, 700);
+    r.setView({ vZoom: 40 });
+    const svg = r.toSVG();
+    expect(svg).not.toContain("<image");
+  });
+});
+
+/**
+ * Just enough DOM for the label layer.
+ *
+ * The suite runs in node, and pulling in jsdom to check that three spans land
+ * in the right place would be a large dependency for a small question. This
+ * records what the renderer does to the layer, in the same spirit as the
+ * recording canvas stub above — and, like it, records intent rather than
+ * result: nothing here lays anything out.
+ */
+function fakeDom() {
+  const make = (tag: string) => {
+    const el: any = {
+      tagName: tag.toUpperCase(),
+      children: [] as any[],
+      style: {} as Record<string, string>,
+      dataset: {} as Record<string, string>,
+      className: "",
+      textContent: "",
+      appendChild(c: any) { el.children.push(c); return c; },
+      querySelectorAll(sel: string) {
+        const want = sel.toUpperCase();
+        return el.children.filter((c: any) => c.tagName === want);
+      },
+      getContext: () => null,
+    };
+    return el;
+  };
+  const prev = (globalThis as any).document;
+  (globalThis as any).document = { createElement: make };
+  return { layer: make("div"), restore: () => { (globalThis as any).document = prev; } };
+}
+
+describe("leaf labels as real text", () => {
+  it("writes them into a layer instead of painting them", () => {
+    const { r } = makeRenderer(SIMPLE, 900, 700);
+    const { layer, restore } = fakeDom();
+    r.setLabelLayer(layer);
+    r.drawForTest();
+    restore();
+    const spans = layer.querySelectorAll("span")
+      .filter((el: any) => el.style.display !== "none");
+    expect(spans.length).toBeGreaterThan(0);
+    // Real text, not a canvas glyph — which is the whole point.
+    expect(spans.map((el: any) => el.textContent)).toContain("A");
+  });
+
+  it("still paints them into an export", () => {
+    // The layer is a DOM element. A PNG whose labels live in a div is a PNG
+    // with no labels, so an export has to take the painting path.
+    const { r } = makeRenderer(SIMPLE, 900, 700);
+    const { layer, restore } = fakeDom();
+    r.setLabelLayer(layer);
+    const svg = r.toSVG();
+    restore();
+    expect(svg).toContain(">A<");
+  });
+
+  it("places nothing outside the canvas", () => {
+    // A span above the top edge is clipped out of sight but still swallows
+    // clicks meant for whatever the host drew above the tree — which is how
+    // the first label came to eat the pane header's own clicks.
+    const { r } = makeRenderer(SIMPLE, 900, 700);
+    const { layer, restore } = fakeDom();
+    r.setLabelLayer(layer);
+    r.setView({ vZoom: 8, panY: -900 });
+    r.drawForTest();
+    restore();
+    const shown = layer.querySelectorAll("span")
+      .filter((el: any) => el.style.display !== "none");
+    for (const el of shown) {
+      const top = parseFloat((el as any).style.top);
+      expect(top).toBeGreaterThanOrEqual(0);
+      expect(top).toBeLessThanOrEqual(700);
+    }
+  });
+});
