@@ -7,6 +7,7 @@
  */
 
 import type { TrackDef, TrackInstance, TrackInitContext } from "./types";
+import type { DrawTarget } from "./svg";
 
 const registry = new Map<string, TrackDef<never>>();
 
@@ -504,8 +505,80 @@ export interface LocusGene {
   df_type?: string | null;
   df_subtype?: string | null;
   df_gene?: string | null;
+  /**
+   * Called by DefenseFinder under either annotator — Aleph's precomputed
+   * `df_type` or Hoodini's own `deffinder_type`.
+   *
+   * The server folds the two into one boolean because the mark is the same
+   * either way: "something here is a defence gene". Which annotator said so is
+   * a question for the tooltip, where the two are shown apart because they can
+   * legitimately disagree.
+   */
+  defense?: boolean;
+  /** DefenseFinder re-run by Hoodini over this exact window. */
+  deffinder_type?: string | null;
+  deffinder_subtype?: string | null;
+  deffinder_gene?: string | null;
   product?: string | null;
 }
+
+/**
+ * Trace one gene's outline onto the current path, without painting it.
+ *
+ * A separate function because the shape is needed twice — once to fill and
+ * once to clip the defence hatch to — and computing the arrow a second time by
+ * hand is how a mark comes to sit a pixel off the gene it belongs to, which is
+ * the drawing/hit-testing trap this renderer has already been caught by twice.
+ * Free-standing rather than a closure in the draw loop: at fifteen genes a row
+ * and several hundred rows a frame, a closure per gene is real allocation.
+ */
+function traceGene(
+  ctx: DrawTarget,
+  gx0: number,
+  gx1: number,
+  midY: number,
+  boxH: number,
+  head: number,
+  fwd: boolean,
+  plain: boolean,
+): void {
+  ctx.beginPath();
+  if (plain) {
+    ctx.rect(gx0, midY - boxH / 2, Math.max(1, gx1 - gx0), boxH);
+  } else if (fwd) {
+    ctx.moveTo(gx0, midY - boxH / 2);
+    ctx.lineTo(gx1 - head, midY - boxH / 2);
+    ctx.lineTo(gx1, midY);
+    ctx.lineTo(gx1 - head, midY + boxH / 2);
+    ctx.lineTo(gx0, midY + boxH / 2);
+    ctx.closePath();
+  } else {
+    ctx.moveTo(gx1, midY - boxH / 2);
+    ctx.lineTo(gx0 + head, midY - boxH / 2);
+    ctx.lineTo(gx0, midY);
+    ctx.lineTo(gx0 + head, midY + boxH / 2);
+    ctx.lineTo(gx1, midY + boxH / 2);
+    ctx.closePath();
+  }
+}
+
+/** Perpendicular spacing of the defence hatch, in screen px. */
+const HATCH_PX = 3;
+
+/** Annotated, but not named by the palette — see the track's note. */
+const UNRANKED = "#9aa3ad";
+
+/** Not annotated at all. Deliberately lighter than `UNRANKED`. */
+const UNKEYED = "#c9ced6";
+
+/**
+ * How many families a neighbourhood legend names before it stops.
+ *
+ * Two dozen is roughly where a list of swatches stops being scannable, and it
+ * is also where colours stop being reliably tellable apart — so naming more
+ * would be promising a distinction the eye cannot make anyway.
+ */
+const LEGEND_MAX = 24;
 
 export interface LocusRecord {
   target: string;
@@ -525,9 +598,24 @@ export interface LocusRecord {
  * this track is for.
  *
  * Colour is a key the server chose (homology family, Pfam, DefenseFinder
- * type), so the palette here means what Hoodini's viewer means by it. The
- * target gene is outlined rather than recoloured: it has to be findable
- * without taking a colour away from the annotation being read.
+ * type), so the palette here means what Hoodini's viewer means by it. **The
+ * palette is the whole answer**: a key it does not name is drawn `UNRANKED`,
+ * and the caller decides which keys are in it. That is not a detail — Zahir
+ * puts a family in the palette when it occurs beside at least N of the job's
+ * neighbourhoods, N being a slider, so a key falling through to grey means
+ * "too rare to be worth a colour at your current setting" and hashing it a
+ * colour anyway would quietly overrule the control.
+ *
+ * The two greys therefore say different things and must not converge:
+ * `UNRANKED` is *annotated but rare*, `UNKEYED` is *not annotated at all*. On
+ * a real project 424k of 622k neighbours carry a Pfam family across 9,316
+ * distinct families, so the second grey covers a third of the column and the
+ * first covers however much of the rest the threshold decides.
+ *
+ * The target gene is outlined rather than recoloured, and a DefenseFinder call
+ * is hatched rather than recoloured: both have to be findable without taking a
+ * colour away from the annotation being read, and both have to be tellable
+ * apart from each other, which is why one is an outline and one is a fill.
  */
 registerTrack("neighbourhood", {
   width: 260,
@@ -561,29 +649,50 @@ registerTrack("neighbourhood", {
       const gx0 = x + (g.s + span) * scale;
       const gx1 = x + (g.e + span) * scale;
       const gw = Math.max(1, gx1 - gx0);
-      ctx.fillStyle = g.key ? (track.palette?.[g.key] ?? "#9aa3ad") : "#c9ced6";
+      // The palette decides. A keyed gene it does not name is rare rather than
+      // unannotated, and gets the darker of the two greys; see the track note.
+      ctx.fillStyle = g.key ? (track.palette?.[g.key] ?? UNRANKED) : UNKEYED;
 
-      if (gw <= head * 1.5 || boxH < 4) {
+      const plain = gw <= head * 1.5 || boxH < 4;
+
+      if (plain) {
         // Too narrow for an arrow head; a plain box at least keeps the gene
-        // visible, which matters more at this size than its direction.
+        // visible, which matters more at this size than its direction. Drawn
+        // with fillRect rather than through `traceGene`, which keeps it a
+        // `<rect>` in an export instead of a four-point path.
         ctx.fillRect(gx0, midY - boxH / 2, gw, boxH);
       } else {
-        ctx.beginPath();
-        if (g.fwd) {
-          ctx.moveTo(gx0, midY - boxH / 2);
-          ctx.lineTo(gx1 - head, midY - boxH / 2);
-          ctx.lineTo(gx1, midY);
-          ctx.lineTo(gx1 - head, midY + boxH / 2);
-          ctx.lineTo(gx0, midY + boxH / 2);
-        } else {
-          ctx.moveTo(gx1, midY - boxH / 2);
-          ctx.lineTo(gx0 + head, midY - boxH / 2);
-          ctx.lineTo(gx0, midY);
-          ctx.lineTo(gx0 + head, midY + boxH / 2);
-          ctx.lineTo(gx1, midY + boxH / 2);
-        }
-        ctx.closePath();
+        traceGene(ctx, gx0, gx1, midY, boxH, head, g.fwd, false);
         ctx.fill();
+      }
+
+      // A DefenseFinder call, hatched over whatever colour the gene already
+      // has. Recolouring it would mean choosing between "this is a defence
+      // gene" and "this is a Cap4 family", and the column exists to be read
+      // for both at once. Below four pixels the lines are closer together than
+      // the shape is tall, so the hatch reads as a smudge rather than as a
+      // mark — the same threshold the arrow head and the self-outline use.
+      if (g.defense && boxH >= 4) {
+        ctx.save();
+        traceGene(ctx, gx0, gx1, midY, boxH, head, g.fwd, plain);
+        ctx.clip();
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const yTop = midY - boxH / 2;
+        const yBot = midY + boxH / 2;
+        // Lines of x = y + c, so 45° down-right. Perpendicular spacing is
+        // c-spacing / sqrt(2); the loop only walks the range of c that can
+        // cross the box at all, because the clip hides the rest but an export
+        // would still carry every one of them as a path.
+        const step = HATCH_PX * Math.SQRT2;
+        const c0 = Math.ceil((gx0 - yBot) / step) * step;
+        for (let c = c0; c <= gx1 - yTop; c += step) {
+          ctx.moveTo(c + yTop, yTop);
+          ctx.lineTo(c + yBot, yBot);
+        }
+        ctx.stroke();
+        ctx.restore();
       }
 
       if (g.self && boxH >= 4) {
@@ -593,7 +702,21 @@ registerTrack("neighbourhood", {
       }
     }
   },
+  /**
+   * Capped, because the palette is no longer a shortlist.
+   *
+   * Every ranked key now has an entry — thousands of them on a real project —
+   * and a legend of thousands of rows is not a legend. The palette is built in
+   * rank order and object keys keep insertion order, so the head of it is the
+   * families that recur in the most loci, which is the only part worth naming;
+   * the tail is identifiable by hovering a gene.
+   */
   legend(track) {
-    return Object.entries(track.palette ?? {}).map(([label, color]) => ({ label, color }));
+    const all = Object.entries(track.palette ?? {});
+    const out = all.slice(0, LEGEND_MAX).map(([label, color]) => ({ label, color }));
+    if (all.length > LEGEND_MAX) {
+      out.push({ label: `+${all.length - LEGEND_MAX} more`, color: UNRANKED });
+    }
+    return out;
   },
 });
