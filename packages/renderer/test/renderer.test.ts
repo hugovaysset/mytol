@@ -22,6 +22,7 @@ import {
   supportRgb,
   hexToRgb,
   defaultStyle,
+  SvgContext,
   type TrackInstance,
 } from "../src/index";
 
@@ -40,13 +41,22 @@ interface Calls {
   clips: Array<{ x: number; y: number; w: number; h: number }>;
   /** strokeStyle at each stroke(), for colour assertions on path-drawn modes. */
   strokes: string[];
+  /**
+   * fillStyle at each fill(), for tracks that paint a shape rather than a box.
+   *
+   * `rects` only carries the fillRect path, so a gene wide enough to be drawn
+   * as an arrow left no record of its colour at all.
+   */
+  fills: string[];
+  /** Geometry and strokeStyle of each strokeRect. */
+  strokeRects: Array<{ x: number; y: number; w: number; h: number; color: string }>;
 }
 
 function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls } {
   // rect() then clip() is how a clipping region is set; remember the last rect
   // so clip() can record what it actually masked to.
   let pendingRect: { x: number; y: number; w: number; h: number } | null = null;
-  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [], strokes: [] };
+  const calls: Calls = { fillRect: 0, fillText: 0, stroke: 0, arc: 0, fill: 0, ops: [], xs: [], rects: [], clips: [], strokes: [], fills: [], strokeRects: [] };
   const ctx: Record<string, unknown> = {
     fillStyle: "",
     globalAlpha: 1,
@@ -96,6 +106,11 @@ function stubCanvas(w = 800, h = 600): { canvas: HTMLCanvasElement; calls: Calls
     fill: () => {
       calls.fill++;
       calls.ops.push("fill");
+      calls.fills.push(String(ctx.fillStyle));
+    },
+    strokeRect: (x: number, y: number, w: number, h: number) => {
+      calls.ops.push("strokeRect");
+      calls.strokeRects.push({ x, y, w, h, color: String(ctx.strokeStyle) });
     },
     save: () => {},
     restore: () => {},
@@ -2519,5 +2534,149 @@ describe("the elevator", () => {
     // that contained them would carry two more closed paths than one without.
     expect(r.elevatorForTest()).not.toBeNull();
     expect(withBar).not.toContain("elevator");
+  });
+});
+
+/**
+ * The neighbourhood track's own drawing, exercised through `drawCell`.
+ *
+ * Called directly rather than through the renderer because the questions here
+ * are about one cell — what colour a gene ends up, and what is painted over it
+ * — and attaching a locus column to a tree only adds culling to the picture.
+ */
+function hoodTrack(
+  genes: Array<Record<string, unknown>>,
+  palette?: Record<string, string>,
+): TrackInstance {
+  return {
+    type: "neighbourhood",
+    label: "hood",
+    visible: true,
+    values: [{ target: "T0", span: 10000, genes }],
+    palette,
+  } as unknown as TrackInstance;
+}
+
+/** Draw one locus into the recording stub. `h` is the row height. */
+function drawHood(track: TrackInstance, h = 20) {
+  const { canvas, calls } = stubCanvas();
+  const ctx = canvas.getContext("2d") as unknown as never;
+  getTrack("neighbourhood")!.drawCell(ctx, 0, 0, 260, h, 0, track as never);
+  return calls;
+}
+
+/** A gene wide enough to be drawn as an arrow rather than a box. */
+function gene(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { acc: "g1", s: -5000, e: -1000, fwd: true, key: null, ...extra };
+}
+
+const HATCH = "rgba(0,0,0,0.55)";
+/** What the track paints a gene carrying no key at all. */
+const UNKEYED = "#c9ced6";
+/** What it paints a keyed gene the palette does not name. */
+const UNRANKED = "#9aa3ad";
+
+describe("neighbourhood gene colours", () => {
+  it("paints a key the palette does not name the rare-family grey", () => {
+    // The palette is the whole answer, because the caller builds it by
+    // applying an abundance threshold the user controls. Hashing an unnamed
+    // key a colour of its own would overrule that slider silently.
+    const calls = drawHood(hoodTrack([gene({ key: "PF00001" })]));
+    expect(calls.fills).toContain(UNRANKED);
+    expect(calls.fills).not.toContain(hashColor("PF00001"));
+  });
+
+  it("keeps an unkeyed gene a different grey from an annotated rare one", () => {
+    // The two greys are the whole reading: "nothing is annotated here" has to
+    // stay distinguishable from "this is annotated and below the threshold".
+    const calls = drawHood(hoodTrack([gene({ key: null })]));
+    expect(calls.fills).toContain(UNKEYED);
+    expect(UNKEYED).not.toBe(UNRANKED);
+  });
+
+  it("colours every key the palette does name", () => {
+    // The other half of the same rule: above the threshold the caller names
+    // the family, and the track must then take its colour rather than a grey.
+    const calls = drawHood(hoodTrack([gene({ key: "C7" })], { C7: "#e6194b" }));
+    expect(calls.fills).toContain("#e6194b");
+    expect(calls.fills).not.toContain(UNRANKED);
+  });
+});
+
+describe("defence genes are hatched", () => {
+  it("paints something over a defence gene that a plain one does not get", () => {
+    const pal = { PF00001: "#e6194b" };
+    const plain = drawHood(hoodTrack([gene({ key: "PF00001" })], pal));
+    const armed = drawHood(hoodTrack([gene({ key: "PF00001", defense: true })], pal));
+    expect(plain.strokes).not.toContain(HATCH);
+    expect(armed.strokes).toContain(HATCH);
+    // The colour underneath is untouched: the hatch is read WITH the family,
+    // not instead of it.
+    expect(armed.fills).toContain("#e6194b");
+  });
+
+  it("keeps the hatch and the target outline as two different marks", () => {
+    // Both can be true of the same gene, and "this is the tip's own protein"
+    // and "this is a defence gene" are different facts.
+    const calls = drawHood(hoodTrack([gene({ key: "PF00001", self: true, defense: true })]));
+    expect(calls.strokes).toContain(HATCH);
+    expect(calls.strokeRects.map((r) => r.color)).toContain("#101418");
+  });
+
+  it("skips the hatch on rows too short for it to read as lines", () => {
+    // Under a few pixels the spacing is wider than the shape is tall, so the
+    // hatch is a smudge that darkens the colour it is meant to sit on. Same
+    // threshold the arrow head and the self-outline use.
+    const calls = drawHood(hoodTrack([gene({ key: "PF00001", defense: true })]), 4);
+    expect(calls.strokes).not.toContain(HATCH);
+  });
+
+  it("draws an old cached locus, which has no defence field at all", () => {
+    // The four DefenseFinder fields are optional because a payload cached
+    // before the server started sending them must still draw rather than throw
+    // — a track that throws unmounts the panel.
+    const calls = drawHood(hoodTrack([gene({ key: "PF00001" })]));
+    expect(calls.strokes).not.toContain(HATCH);
+    expect(calls.fill).toBeGreaterThan(0);
+  });
+
+  it("survives the export path with the hatch clipped to the gene", () => {
+    // `drawCell` runs against the SVG recorder for a panel export. A hatch
+    // that threw there would take the export down; one that silently vanished
+    // would make every exported figure disagree with the screen.
+    const c = new SvgContext(300, 40);
+    getTrack("neighbourhood")!.drawCell(
+      c as unknown as never, 0, 0, 260, 20, 0,
+      hoodTrack([gene({ key: "PF00001", defense: true })]) as never);
+    const svg = c.toSVG();
+    expect(svg).toContain("<clipPath");
+    const open = svg.indexOf("<g clip-path");
+    const close = svg.indexOf("</g>", open);
+    expect(open).toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(-1);
+    // The hatch is inside the group the clip opened, not trailing after it.
+    const inside = svg.slice(open, close);
+    expect(inside).toContain(`stroke="${HATCH}"`);
+  });
+});
+
+describe("the neighbourhood legend", () => {
+  it("names the top of the ranking rather than every family in the palette", () => {
+    // The palette now carries every ranked key — thousands on a real project —
+    // and a legend cannot be thousands of rows long.
+    const palette: Record<string, string> = {};
+    for (let i = 0; i < 500; i++) palette[`PF${i}`] = hashColor(`PF${i}`);
+    const entries = getTrack("neighbourhood")!.legend!(hoodTrack([], palette) as never);
+    expect(entries.length).toBeLessThan(40);
+    // Insertion order is rank order, so the head of the palette is the
+    // families that recur in the most loci.
+    expect(entries[0].label).toBe("PF0");
+    expect(entries[entries.length - 1].label).toMatch(/^\+\d+ more$/);
+  });
+
+  it("says nothing extra when the palette is short enough to name in full", () => {
+    const entries = getTrack("neighbourhood")!.legend!(
+      hoodTrack([], { C1: "#111111", C2: "#222222" }) as never);
+    expect(entries.map((e) => e.label)).toEqual(["C1", "C2"]);
   });
 });
