@@ -2739,3 +2739,84 @@ describe("the neighbourhood legend", () => {
     expect(entries.map((e) => e.label)).toEqual(["C1", "C2"]);
   });
 });
+
+describe("curve tracks", () => {
+  /** What `drawColumn` was handed, via a spy type registered alongside. */
+  function columnPoints(nLeaves: number, h: number, vals: (i: number) => number) {
+    let got: Array<{ y: number; v: number }> = [];
+    registerTrack("curve-spy", {
+      width: 60,
+      drawColumn(_ctx, _x, _w, pts) {
+        got = [...pts];
+      },
+      drawCell() {
+        throw new Error("drawCell must not run when drawColumn exists");
+      },
+    });
+    const { r } = makeRenderer(balanced(nLeaves), 800, h);
+    r.setTracks([
+      {
+        type: "curve-spy",
+        label: "avg",
+        visible: true,
+        numeric: Float64Array.from({ length: nLeaves }, (_, i) => vals(i)),
+      },
+    ]);
+    r.draw();
+    return got;
+  }
+
+  /** The curve's own drawing, recorded path by path. */
+  function drawnPaths(pts: Array<{ y: number; v: number }>) {
+    const paths: Array<{ xs: number[]; op: string }> = [];
+    let cur: number[] = [];
+    const ctx = {
+      fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1,
+      save() {}, restore() {}, closePath() {}, fillRect() {},
+      beginPath() { cur = []; },
+      moveTo(x: number) { cur.push(x); },
+      lineTo(x: number) { cur.push(x); },
+      fill() { paths.push({ xs: cur, op: "fill" }); },
+      stroke() { paths.push({ xs: cur, op: "stroke" }); },
+    };
+    const track = { type: "curve", label: "c", visible: true, vmin: 0, vmax: 1 } as TrackInstance;
+    getTrack("curve")!.drawColumn!(ctx as never, 100, 60, pts, track as never);
+    return paths.filter((p) => p.op === "stroke");
+  }
+
+  it("is registered, and puts vmin at the left and vmax at the right", () => {
+    expect(registeredTrackTypes()).toContain("curve");
+    const [line] = drawnPaths([{ y: 0, v: 0 }, { y: 10, v: 1 }]);
+    expect(line.xs[0]).toBeLessThan(105);
+    expect(line.xs[line.xs.length - 1]).toBeGreaterThan(155);
+  });
+
+  it("draws one line through every row, not a mark per cell", () => {
+    const pts = Array.from({ length: 8 }, (_, i) => ({ y: i * 10, v: i / 7 }));
+    const lines = drawnPaths(pts);
+    expect(lines).toHaveLength(1);
+    // moveTo plus a lineTo per point.
+    expect(lines[0].xs).toHaveLength(9);
+  });
+
+  it("breaks the line where a value is missing", () => {
+    const pts = Array.from({ length: 8 }, (_, i) => ({ y: i * 10, v: i === 4 ? NaN : 0.5 }));
+    expect(drawnPaths(pts)).toHaveLength(2);
+  });
+
+  it("gets a point per row when rows are tall enough", () => {
+    const pts = columnPoints(8, 400, (i) => i);
+    expect(pts.map((p) => p.v)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    for (let i = 1; i < pts.length; i++) expect(pts[i].y).toBeGreaterThan(pts[i - 1].y);
+  });
+
+  it("averages rather than samples below a pixel per row", () => {
+    // Alternating 0/1 at 4096 tips on a ~100px pane: every pixel row holds
+    // both, so its mean is near 0.5. Sampling would land on one or the other.
+    const pts = columnPoints(4096, 120, (i) => i % 2);
+    expect(pts.length).toBeGreaterThan(20);
+    expect(pts.length).toBeLessThan(200);
+    // The end rows may hold a single leaf, whose mean is honestly that leaf.
+    for (const p of pts.slice(1, -1)) expect(Math.abs(p.v - 0.5)).toBeLessThan(0.1);
+  });
+});

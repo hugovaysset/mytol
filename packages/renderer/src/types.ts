@@ -191,6 +191,24 @@ export interface TrackDef<T extends TrackInstance = TrackInstance> {
     leafIndex: number,
     track: T,
   ): void;
+  /**
+   * Draw the whole visible column at once, in the rectangular layout.
+   *
+   * For a track whose mark joins one row to the next — a curve — which a cell
+   * at a time cannot draw, because a cell does not know where its neighbours
+   * put their points. `pts` runs top to bottom, one per row or, below a pixel
+   * per row, one per pixel row holding the mean of the leaves on it; `v` is
+   * NaN where there is no value, and the line breaks there. When present it
+   * replaces `drawCell` in the rectangular layout only; rings still use
+   * `drawCell`.
+   */
+  drawColumn?(
+    ctx: DrawTarget,
+    x: number,
+    w: number,
+    pts: ReadonlyArray<{ y: number; v: number }>,
+    track: T,
+  ): void;
   /** Legend entries, for the host to render however it likes. */
   legend?(track: T): Array<{ label: string; color: string }>;
 }

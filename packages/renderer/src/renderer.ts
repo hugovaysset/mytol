@@ -1446,6 +1446,16 @@ export class TreeRenderer {
       // neighbouring blocks antialias together and one category appears in
       // several shades. Aggregating each pixel row instead fixes both.
       // The same guides in the rectangular layout, as vertical rules.
+      if (def.drawColumn) {
+        def.drawColumn(ctx, colX, w, this.columnPoints(m, rowH, track), track as never);
+        this.bandLeaf.delete(track);
+        this.sampled.delete(track);
+        this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
+        colX += w + TRACK_GAP;
+        shown++;
+        continue;
+      }
+
       if (def.wideRing && track.vmax && track.vmax > 0) {
         ctx.save();
         ctx.fillStyle = this.style.dimmed;
@@ -1485,6 +1495,58 @@ export class TreeRenderer {
     }
 
     this.drawTrackMarkers();
+  }
+
+  /**
+   * The points a `drawColumn` track joins, top to bottom.
+   *
+   * One per visible row while rows are at least a pixel tall. Below that, one
+   * per pixel row holding the MEAN of the leaves on it — the same rule the
+   * numeric strips follow, for the same reason: every leaf counts, where
+   * sampling every Nth would make the line depend on which ones it hit. At
+   * full size a row past each edge is included, so the line runs off the pane
+   * rather than stopping short of it.
+   */
+  private columnPoints(
+    m: RectMetrics,
+    rowH: number,
+    track: TrackInstance,
+  ): Array<{ y: number; v: number }> {
+    const numeric = track.numeric;
+    if (!numeric) return [];
+    const pts: Array<{ y: number; v: number }> = [];
+    if (rowH >= 1) {
+      const start = Math.max(0, m.visibleLeafStart - 1);
+      const end = Math.min(numeric.length, m.visibleLeafEnd + 1);
+      for (let i = start; i < end; i++) pts.push({ y: this.rowY(m, i), v: numeric[i] });
+      return pts;
+    }
+    // Aggregated, the visible leaves alone: one leaf past the edge would be a
+    // pixel row of its own, and its single value a spike at the pane's edge.
+    const start = m.visibleLeafStart;
+    const end = Math.min(numeric.length, m.visibleLeafEnd);
+    let band = NaN;
+    let sum = 0;
+    let n = 0;
+    const push = () => {
+      if (!Number.isNaN(band)) pts.push({ y: band + 0.5, v: n ? sum / n : NaN });
+    };
+    for (let i = start; i < end; i++) {
+      const b = Math.floor(this.rowY(m, i));
+      if (b !== band) {
+        push();
+        band = b;
+        sum = 0;
+        n = 0;
+      }
+      const v = numeric[i];
+      if (!Number.isNaN(v)) {
+        sum += v;
+        n++;
+      }
+    }
+    push();
+    return pts;
   }
 
   /**
