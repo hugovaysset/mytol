@@ -399,6 +399,92 @@ registerTrack("bar", {
   },
 });
 
+/** Where a curve puts value `v` across its column: vmin at the left edge. */
+export function curveX(v: number, x: number, w: number, track: TrackInstance): number {
+  const lo = track.vmin ?? 0;
+  const hi = track.vmax ?? 1;
+  const pad = Math.min(3, w * 0.1);
+  const f = hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0;
+  return x + pad + f * (w - 2 * pad);
+}
+
+/**
+ * A continuous value as a line running down the column — typically a sliding
+ * average, which a heatmap beside it shows row by row and this shows as a
+ * trend. Drawn whole through `drawColumn`; `drawCell` is only the ring's
+ * fallback, a dot per row.
+ */
+registerTrack("curve", {
+  width: 60,
+  wideRing: true,
+  init(track) {
+    if (track.numeric && (track.vmin == null || track.vmax == null)) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const v of track.numeric) {
+        if (Number.isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      track.vmin = track.vmin ?? (Number.isFinite(lo) ? lo : 0);
+      track.vmax = track.vmax ?? (Number.isFinite(hi) ? hi : 1);
+    }
+  },
+  drawColumn(ctx, x, w, pts, track) {
+    if (!pts.length) return;
+    const color = track.color ?? "#2b6cb0";
+    const x0 = curveX(track.vmin ?? 0, x, w, track);
+    const top = pts[0].y;
+    const bottom = pts[pts.length - 1].y;
+
+    // Baseline and midline, so the swing reads against something fixed.
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.25;
+    ctx.fillRect(x0, top, 1, bottom - top);
+    ctx.globalAlpha = 0.1;
+    ctx.fillRect((x0 + curveX(track.vmax ?? 1, x, w, track)) / 2, top, 1, bottom - top);
+    ctx.restore();
+
+    // One run per stretch of defined values: a filled area back to the
+    // baseline, then the line over it.
+    let run: Array<{ y: number; v: number }> = [];
+    const flush = () => {
+      if (!run.length) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x0, run[0].y);
+      for (const p of run) ctx.lineTo(curveX(p.v, x, w, track), p.y);
+      ctx.lineTo(x0, run[run.length - 1].y);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.15;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(curveX(run[0].v, x, w, track), run[0].y);
+      for (const p of run) ctx.lineTo(curveX(p.v, x, w, track), p.y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+      ctx.restore();
+      run = [];
+    };
+    for (const p of pts) {
+      if (Number.isNaN(p.v)) flush();
+      else run.push(p);
+    }
+    flush();
+  },
+  drawCell(ctx, x, y, w, h, leafIndex, track) {
+    const v = track.numeric?.[leafIndex];
+    if (v == null || Number.isNaN(v)) return;
+    ctx.fillStyle = track.color ?? "#2b6cb0";
+    const s = Math.max(1, Math.min(2, h));
+    ctx.fillRect(curveX(v, x, w, track) - s / 2, y + h / 2 - s / 2, s, s);
+  },
+});
+
 /**
  * Pfam-style domain architecture.
  *
