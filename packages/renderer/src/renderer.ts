@@ -38,8 +38,8 @@ import {
   defaultStyle,
   emptyHighlight,
 } from "./types";
-import { getTrack, initTrack, heatValueColor, hashColor } from "./registry";
-import type { LocusGene, LocusRecord } from "./registry";
+import { getTrack, initTrack, heatValueColor, hashColor, locusDomainAt } from "./registry";
+import type { LocusDomain, LocusGene, LocusRecord } from "./registry";
 import { SvgContext, type DrawTarget } from "./svg";
 
 const PADDING = 40;
@@ -167,6 +167,8 @@ export interface TrackHover {
   domain?: { name: string; acc?: string; start: number; end: number };
   /** Set only over a neighbourhood track: the gene under the cursor. */
   gene?: LocusGene;
+  /** Set only in a neighbourhood track's domain mode: the domain under it. */
+  geneDomain?: LocusDomain;
 }
 
 export class TreeRenderer {
@@ -933,10 +935,10 @@ export class TreeRenderer {
     leafIndex: number,
     offset: number,
     width: number,
-  ): LocusGene | undefined {
-    if (track.type !== "neighbourhood" || width <= 0) return undefined;
+  ): { gene?: LocusGene; geneDomain?: LocusDomain } {
+    if (track.type !== "neighbourhood" || width <= 0) return {};
     const rec = track.values?.[leafIndex] as LocusRecord | undefined;
-    if (!rec?.genes?.length) return undefined;
+    if (!rec?.genes?.length) return {};
     const span = rec.span || 20000;
     const bp = (offset / width) * 2 * span - span;
     let best: LocusGene | undefined;
@@ -946,7 +948,11 @@ export class TreeRenderer {
       const d = Math.abs(bp - (g.s + g.e) / 2);
       if (d < bestD) { bestD = d; best = g; }
     }
-    return best;
+    if (!best) return {};
+    return {
+      gene: best,
+      geneDomain: track.domainsOnGenes ? locusDomainAt(best, bp) : undefined,
+    };
   }
 
   /** Which leaf row a screen point falls on in circular mode, by angle alone. */
@@ -2581,7 +2587,7 @@ export class TreeRenderer {
             track: hit.track,
             leafIndex: leaf,
             domain: this.domainAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
-            gene: this.geneAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
+            ...this.geneAt(hit.track, leaf, sx - hit.x0, hit.x1 - hit.x0),
           };
         }
         let leafIndex = this.leafIndexAt(sy);
@@ -2596,7 +2602,7 @@ export class TreeRenderer {
           track: hit.track,
           leafIndex,
           domain: this.domainAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
-          gene: this.geneAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
+          ...this.geneAt(hit.track, leafIndex, sx - hit.x0, hit.x1 - hit.x0),
         };
       }
       return null;
@@ -2625,7 +2631,7 @@ export class TreeRenderer {
           // On a ring the layout runs outward, so depth into the ring is what
           // the rectangular layout reads off x.
           domain: this.domainAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
-          gene: this.geneAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
+          ...this.geneAt(hit.track, row, r - hit.r0, hit.r1 - hit.r0),
         };
       }
       return null;

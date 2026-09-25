@@ -37,11 +37,13 @@ export interface HoverTarget {
     domain?: { name: string; acc?: string; start: number; end: number };
     /** Set over a neighbourhood track: the gene under the cursor. */
     gene?: LocusGene;
+    /** Set in a neighbourhood track's domain mode: the domain under it. */
+    geneDomain?: LocusDomain;
   };
   /** Leaf row under the pointer, when there is one. */
   leafIndex?: number;
 }
-import type { LocusGene, TrackHover } from "@mytol/renderer";
+import type { LocusDomain, LocusGene, TrackHover } from "@mytol/renderer";
 import {
   applyClick,
   applyBoxSelect,
@@ -364,6 +366,7 @@ export const PhyloTree = forwardRef<PhyloTreeHandle, PhyloTreeProps>(function Ph
             hiddenCount: overTrack.hiddenCount,
             domain: overTrack.domain,
             gene: overTrack.gene,
+            geneDomain: overTrack.geneDomain,
           },
         });
         return;
