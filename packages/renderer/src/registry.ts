@@ -520,6 +520,36 @@ export interface LocusGene {
   deffinder_subtype?: string | null;
   deffinder_gene?: string | null;
   product?: string | null;
+  /**
+   * Pfam hits on this gene, overlaps already resolved by the server, in the
+   * same relative base-pair coordinates as the gene. Drawn only when the track
+   * is in `domainsOnGenes` mode.
+   */
+  domains?: LocusDomain[];
+}
+
+/** One Pfam hit placed on a neighbourhood gene. */
+export interface LocusDomain {
+  name: string;
+  /** Start and end in base pairs, the same frame as `LocusGene.s`/`e`. */
+  s: number;
+  e: number;
+  /** Residue range on the protein, for the tooltip. */
+  from?: number;
+  to?: number;
+  /** HMMER bit score of this occurrence. */
+  score?: number | null;
+}
+
+/**
+ * The domain of `gene` covering base pair `bp`, if any.
+ *
+ * Shared by the hover test so the tooltip names the box under the pointer
+ * from the same coordinates `drawCell` painted it with.
+ */
+export function locusDomainAt(gene: LocusGene, bp: number): LocusDomain | undefined {
+  for (const d of gene.domains ?? []) if (bp >= d.s && bp <= d.e) return d;
+  return undefined;
 }
 
 /**
@@ -570,6 +600,17 @@ const UNRANKED = "#9aa3ad";
 
 /** Not annotated at all. Deliberately lighter than `UNRANKED`. */
 const UNKEYED = "#c9ced6";
+
+/**
+ * A gene's body when its domains carry the colour. Lighter than both greys
+ * above, because here it is the ground the domains sit on rather than a
+ * statement about the gene — and a rare domain drawn `UNRANKED` on top of it
+ * has to stay visible.
+ */
+const GENE_BODY = "#e1e4e9";
+
+/** The body's outline in domain mode, so abutting genes stay two genes. */
+const GENE_EDGE = "#aab1bb";
 
 /**
  * How many families a neighbourhood legend names before it stops.
@@ -645,13 +686,20 @@ registerTrack("neighbourhood", {
 
     const boxH = Math.max(2, h * 0.66);
     const head = Math.min(boxH * 0.6, 5);
+    // Pfam mode: a gene is one grey arrow and each of its domains a coloured
+    // box on the stretch it covers, instead of the whole arrow taking the
+    // colour of its single best hit — which hid every multi-domain protein's
+    // other families and where on the gene any of them sat.
+    const byDomain = !!track.domainsOnGenes;
     for (const g of rec.genes) {
       const gx0 = x + (g.s + span) * scale;
       const gx1 = x + (g.e + span) * scale;
       const gw = Math.max(1, gx1 - gx0);
       // The palette decides. A keyed gene it does not name is rare rather than
       // unannotated, and gets the darker of the two greys; see the track note.
-      ctx.fillStyle = g.key ? (track.palette?.[g.key] ?? UNRANKED) : UNKEYED;
+      ctx.fillStyle = byDomain
+        ? GENE_BODY
+        : g.key ? (track.palette?.[g.key] ?? UNRANKED) : UNKEYED;
 
       const plain = gw <= head * 1.5 || boxH < 4;
 
@@ -664,6 +712,29 @@ registerTrack("neighbourhood", {
       } else {
         traceGene(ctx, gx0, gx1, midY, boxH, head, g.fwd, false);
         ctx.fill();
+      }
+
+      if (byDomain && g.domains?.length) {
+        // Clipped to the gene's own outline so a domain at the tip of an arrow
+        // takes the arrow head's shape rather than squaring it off. The same
+        // palette rule as whole genes: a family it does not name is rare at
+        // the current threshold and gets the rare grey.
+        ctx.save();
+        traceGene(ctx, gx0, gx1, midY, boxH, head, g.fwd, plain);
+        ctx.clip();
+        for (const d of g.domains) {
+          const dx0 = x + (d.s + span) * scale;
+          const dx1 = x + (d.e + span) * scale;
+          ctx.fillStyle = track.palette?.[d.name] ?? UNRANKED;
+          ctx.fillRect(dx0, midY - boxH / 2, Math.max(1, dx1 - dx0), boxH);
+        }
+        ctx.restore();
+      }
+      if (byDomain && boxH >= 4) {
+        traceGene(ctx, gx0, gx1, midY, boxH, head, g.fwd, plain);
+        ctx.strokeStyle = GENE_EDGE;
+        ctx.lineWidth = 0.75;
+        ctx.stroke();
       }
 
       // A DefenseFinder call, hatched over whatever colour the gene already

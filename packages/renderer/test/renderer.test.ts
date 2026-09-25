@@ -17,6 +17,8 @@ import {
   paletteFromDomain,
   DEEP,
   hashColor,
+  locusDomainAt,
+  type LocusGene,
   heatColor,
   supportColor,
   supportRgb,
@@ -2657,6 +2659,63 @@ describe("defence genes are hatched", () => {
     // The hatch is inside the group the clip opened, not trailing after it.
     const inside = svg.slice(open, close);
     expect(inside).toContain(`stroke="${HATCH}"`);
+  });
+});
+
+describe("neighbourhood domain mode", () => {
+  /** A track in Pfam mode: genes grey, domains coloured. */
+  function domainTrack(genes: Array<Record<string, unknown>>, palette?: Record<string, string>) {
+    return { ...hoodTrack(genes, palette), domainsOnGenes: true } as unknown as TrackInstance;
+  }
+  const TIR = "#e6194b";
+  const SIR2 = "#3cb44b";
+  const twoDomains = gene({
+    key: "TIR_2",
+    domains: [
+      { name: "TIR_2", s: -4800, e: -3500 },
+      { name: "SIR2", s: -3000, e: -1500 },
+    ],
+  });
+
+  it("paints the gene grey and each domain its own colour on its own stretch", () => {
+    const calls = drawHood(domainTrack([twoDomains], { TIR_2: TIR, SIR2: SIR2 }));
+    // The gene no longer takes its best hit's colour...
+    expect(calls.fills).not.toContain(TIR);
+    // ...each domain is a box in its family's colour, placed where it sits:
+    // 260 px over 20 kb, so -4800..-3500 bp is x 67.6..84.5.
+    const tir = calls.rects.find((r) => r.color === TIR)!;
+    const sir = calls.rects.find((r) => r.color === SIR2)!;
+    expect(tir.x).toBeCloseTo(67.6, 1);
+    expect(tir.x + tir.w).toBeCloseTo(84.5, 1);
+    expect(sir.x).toBeGreaterThan(tir.x + tir.w);
+  });
+
+  it("gives a domain the palette does not name the rare grey, not a hash", () => {
+    // Same rule as whole genes: the palette is the abundance threshold.
+    const calls = drawHood(domainTrack([twoDomains], { TIR_2: TIR }));
+    expect(calls.rects.map((r) => r.color)).toContain(UNRANKED);
+    expect(calls.rects.map((r) => r.color)).not.toContain(hashColor("SIR2"));
+  });
+
+  it("leaves the whole-gene colouring alone outside domain mode", () => {
+    // Every other colour field (family, DefenseFinder) still colours genes.
+    const calls = drawHood(hoodTrack([twoDomains], { TIR_2: TIR, SIR2: SIR2 }));
+    expect(calls.fills).toContain(TIR);
+    expect(calls.rects.map((r) => r.color)).not.toContain(SIR2);
+  });
+
+  it("still hatches a defence gene and outlines the target over the domains", () => {
+    const calls = drawHood(domainTrack(
+      [{ ...twoDomains, defense: true, self: true }], { TIR_2: TIR }));
+    expect(calls.strokes).toContain(HATCH);
+    expect(calls.strokeRects.map((r) => r.color)).toContain("#101418");
+  });
+
+  it("names the domain under a base pair, and nothing between domains", () => {
+    const g = twoDomains as unknown as LocusGene;
+    expect(locusDomainAt(g, -4000)?.name).toBe("TIR_2");
+    expect(locusDomainAt(g, -2000)?.name).toBe("SIR2");
+    expect(locusDomainAt(g, -3200)).toBeUndefined();
   });
 });
 
