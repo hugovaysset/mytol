@@ -1446,6 +1446,32 @@ export class TreeRenderer {
       // neighbouring blocks antialias together and one category appears in
       // several shades. Aggregating each pixel row instead fixes both.
       // The same guides in the rectangular layout, as vertical rules.
+      // A track with nothing to draw at this zoom says so in its own column.
+      // A blank column under its name reads as a broken track; the host
+      // knows why it is empty and this is where the reader is looking.
+      if (track.note) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(colX, 0, w, this.height);
+        ctx.clip();
+        ctx.fillStyle = this.style.dimmed;
+        ctx.fillRect(colX, 0, 1, this.height);
+        ctx.fillStyle = this.style.textMuted;
+        ctx.font = `11px ${this.style.fontFamily}`;
+        ctx.textBaseline = "top";
+        const top = headerRows * 11 + 12;
+        String(track.note).split("\n").forEach((line, k) => {
+          ctx.fillText(line, colX + 8, top + k * 15);
+        });
+        ctx.restore();
+        this.bandLeaf.delete(track);
+        this.sampled.delete(track);
+        this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
+        colX += w + TRACK_GAP;
+        shown++;
+        continue;
+      }
+
       if (def.drawColumn) {
         def.drawColumn(ctx, colX, w, this.columnPoints(m, rowH, track), track as never);
         this.bandLeaf.delete(track);
