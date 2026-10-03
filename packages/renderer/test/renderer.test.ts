@@ -2820,3 +2820,34 @@ describe("curve tracks", () => {
     for (const p of pts.slice(1, -1)) expect(Math.abs(p.v - 0.5)).toBeLessThan(0.1);
   });
 });
+
+describe("track notes", () => {
+  it("draws the note in the column instead of its cells", () => {
+    let cells = 0;
+    registerTrack("note-spy", {
+      width: 200,
+      drawCell() {
+        cells++;
+      },
+    });
+    const { r, calls } = makeRenderer(balanced(64), 800, 600);
+    const track: TrackInstance = {
+      type: "note-spy",
+      label: "hood",
+      visible: true,
+      values: new Array(64).fill(1),
+      note: "Zoom in to draw neighbourhoods\n26,597 rows on screen",
+    };
+    r.setTracks([track]);
+    r.setStyle({ showLeafLabels: false });
+    calls.fillText = 0;
+    r.draw();
+    expect(cells).toBe(0);
+    expect(calls.fillText).toBeGreaterThanOrEqual(2);
+
+    // Without a note the same track draws its cells again.
+    r.setTracks([{ ...track, note: undefined }]);
+    r.draw();
+    expect(cells).toBeGreaterThan(0);
+  });
+});

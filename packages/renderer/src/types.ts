@@ -248,6 +248,12 @@ export interface TrackInstance {
     zeroColor?: string;
   };
   color?: string;
+  /**
+   * Why the column is empty, when it is empty on purpose — "zoom in to see
+   * these". Drawn in the column in place of its cells, in the rectangular
+   * layout; lines split on "\n".
+   */
+  note?: string;
   [key: string]: unknown;
 }
 
