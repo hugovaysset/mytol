@@ -208,6 +208,12 @@ export interface TrackDef<T extends TrackInstance = TrackInstance> {
     w: number,
     pts: ReadonlyArray<{ y: number; v: number }>,
     track: T,
+    /**
+     * Further per-row series aggregated the same way as `pts`, keyed by the
+     * track field they came from — today only `steps`, a curve's regime
+     * levels.
+     */
+    extra?: { steps?: ReadonlyArray<{ y: number; v: number }> },
   ): void;
   /** Legend entries, for the host to render however it likes. */
   legend?(track: T): Array<{ label: string; color: string }>;

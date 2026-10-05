@@ -1449,7 +1449,9 @@ export class TreeRenderer {
       // several shades. Aggregating each pixel row instead fixes both.
       // The same guides in the rectangular layout, as vertical rules.
       if (def.drawColumn) {
-        def.drawColumn(ctx, colX, w, this.columnPoints(m, rowH, track), track as never);
+        const steps = (track as { steps?: ArrayLike<number> }).steps;
+        def.drawColumn(ctx, colX, w, this.columnPoints(m, rowH, track.numeric), track as never,
+                       steps ? { steps: this.columnPoints(m, rowH, steps) } : undefined);
         this.bandLeaf.delete(track);
         this.sampled.delete(track);
         this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
@@ -1515,9 +1517,8 @@ export class TreeRenderer {
   private columnPoints(
     m: RectMetrics,
     rowH: number,
-    track: TrackInstance,
+    numeric: ArrayLike<number> | undefined,
   ): Array<{ y: number; v: number }> {
-    const numeric = track.numeric;
     if (!numeric) return [];
     const pts: Array<{ y: number; v: number }> = [];
     if (rowH >= 1) {

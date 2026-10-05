@@ -2917,3 +2917,42 @@ describe("ncRNA features in a locus", () => {
     expect(got.gene?.kind).toBe("ncRNA");
   });
 });
+
+describe("curve axis and regimes", () => {
+  function record() {
+    const fills: number[][] = [];
+    const strokes: number[][] = [];
+    const ys: number[][] = [];
+    let cur: number[] = [], cy: number[] = [];
+    const ctx = {
+      fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1,
+      save() {}, restore() {}, closePath() {}, fillRect() {}, setLineDash() {},
+      beginPath() { cur = []; cy = []; },
+      moveTo(x: number, y: number) { cur.push(x); cy.push(y); },
+      lineTo(x: number, y: number) { cur.push(x); cy.push(y); },
+      fill() { fills.push(cur); },
+      stroke() { strokes.push(cur); ys.push(cy); },
+    };
+    return { ctx, fills, strokes, ys };
+  }
+
+  it("puts the baseline at the axis the host chose", () => {
+    const { ctx, fills } = record();
+    const track = { type: "curve", label: "c", visible: true, vmin: 0, vmax: 100, axis: 25 } as unknown as TrackInstance;
+    getTrack("curve")!.drawColumn!(ctx as never, 0, 100, [{ y: 0, v: 50 }, { y: 10, v: 60 }], track as never);
+    // pad of 3 px each side: 25 of 0..100 sits at 3 + 0.25 * 94
+    expect(fills[0][0]).toBeCloseTo(3 + 0.25 * 94, 5);
+  });
+
+  it("draws a rule across the column where the regime level changes, and only there", () => {
+    const { ctx, strokes, ys } = record();
+    const track = { type: "curve", label: "c", visible: true, vmin: 0, vmax: 1 } as TrackInstance;
+    const pts = [0, 1, 2, 3].map((i) => ({ y: i * 10, v: 0.5 }));
+    const steps = [0.2, 0.2, 0.8, 0.8].map((v, i) => ({ y: i * 10, v }));
+    getTrack("curve")!.drawColumn!(ctx as never, 0, 100, pts, track as never, { steps });
+    const rules = ys[ys.length - 1];
+    // one rule: a moveTo/lineTo pair at y = 20, spanning the column
+    expect(rules).toEqual([20, 20]);
+    expect(strokes[strokes.length - 1]).toEqual([0, 100]);
+  });
+});

@@ -445,6 +445,52 @@ export function curveX(v: number, x: number, w: number, track: TrackInstance): n
 }
 
 /**
+ * Regime levels over a curve: a dark step line at each regime's level, and a
+ * dashed rule across the column where one regime gives way to the next — the
+ * mark to read is the rule, the step says by how much. A pixel row holding
+ * two regimes averages them, so the step is drawn through it rather than
+ * snapping, and a rule is drawn wherever the level moves between rows.
+ */
+export function drawRegimes(
+  ctx: DrawTarget, x: number, w: number,
+  steps: ReadonlyArray<{ y: number; v: number }>, track: TrackInstance,
+): void {
+  ctx.save();
+  ctx.strokeStyle = "#1b1f24";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let prev: { y: number; v: number } | null = null;
+  const rules: number[] = [];
+  for (const p of steps) {
+    if (Number.isNaN(p.v)) { prev = null; continue; }
+    const px = curveX(p.v, x, w, track);
+    if (!prev) {
+      ctx.moveTo(px, p.y);
+    } else {
+      if (p.v !== prev.v) rules.push(p.y);
+      ctx.lineTo(curveX(prev.v, x, w, track), p.y);
+      ctx.lineTo(px, p.y);
+    }
+    prev = p;
+  }
+  ctx.stroke();
+  if (rules.length) {
+    ctx.strokeStyle = "#1b1f24";
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.6;
+    ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    for (const y of rules) {
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + w, y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+/**
  * A continuous value as a line running down the column — typically a sliding
  * average, which a heatmap beside it shows row by row and this shows as a
  * trend. Drawn whole through `drawColumn`; `drawCell` is only the ring's
@@ -466,15 +512,20 @@ registerTrack("curve", {
       track.vmax = track.vmax ?? (Number.isFinite(hi) ? hi : 1);
     }
   },
-  drawColumn(ctx, x, w, pts, track) {
+  drawColumn(ctx, x, w, pts, track, extra) {
     if (!pts.length) return;
     const color = track.color ?? "#2b6cb0";
+    // Drawn last, over the curve: see `drawRegimes`.
+    const regimesAfter = () => { if (extra?.steps?.length) drawRegimes(ctx, x, w, extra.steps, track); };
     // The fill runs back to zero, not to the minimum: with negative values in
     // range a trend below zero must read as below something. A range that
     // does not include zero keeps its old baseline at the nearer edge.
+    // `axis` moves it: a host can put the baseline at any value, and a
+    // value off the range pins it to the nearer edge.
     const lo = track.vmin ?? 0;
     const hi = track.vmax ?? 1;
-    const x0 = curveX(Math.max(lo, Math.min(hi, 0)), x, w, track);
+    const axis = (track as { axis?: number }).axis ?? 0;
+    const x0 = curveX(Math.max(lo, Math.min(hi, axis)), x, w, track);
     const top = pts[0].y;
     const bottom = pts[pts.length - 1].y;
 
@@ -516,6 +567,7 @@ registerTrack("curve", {
       else run.push(p);
     }
     flush();
+    regimesAfter();
   },
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const v = track.numeric?.[leafIndex];
