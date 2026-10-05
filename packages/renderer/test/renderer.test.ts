@@ -2956,3 +2956,39 @@ describe("curve axis and regimes", () => {
     expect(strokes[strokes.length - 1]).toEqual([0, 100]);
   });
 });
+
+describe("regime steps at low zoom", () => {
+  /** The step series the renderer hands a curve column at row height `h`. */
+  function stepsAt(h: number) {
+    const n = 1000;
+    let got: Array<{ y: number; v: number }> = [];
+    registerTrack("steps-spy", {
+      width: 60,
+      drawColumn(_c, _x, _w, _p, _t, extra) { got = [...(extra?.steps ?? [])]; },
+      drawCell() {},
+    });
+    // three regimes, boundaries at leaf 333 and 666: neither on a pixel-row edge
+    const steps = Float64Array.from({ length: n }, (_, i) => (i < 333 ? 0.2 : i < 666 ? 0.8 : 0.4));
+    const { r } = makeRenderer(balanced(n), 800, h);
+    r.setTracks([{ type: "steps-spy", label: "c", visible: true,
+                   numeric: new Float64Array(n).fill(0.5), steps } as unknown as TrackInstance]);
+    r.draw();
+    return got;
+  }
+
+  it("never invents a level that is not a regime's, however far out you zoom", () => {
+    for (const h of [60, 120, 300, 777]) {   // 16.7 .. 1.3 leaves per pixel row
+      const levels = new Set(stepsAt(h).map((p) => p.v));
+      for (const v of levels) expect([0.2, 0.8, 0.4]).toContain(v);
+    }
+  });
+
+  it("shows each boundary once", () => {
+    for (const h of [60, 120, 300, 777]) {
+      const pts = stepsAt(h);
+      let changes = 0;
+      for (let k = 1; k < pts.length; k++) if (pts[k].v !== pts[k - 1].v) changes++;
+      expect(changes).toBe(2);
+    }
+  });
+});

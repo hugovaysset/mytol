@@ -1451,7 +1451,7 @@ export class TreeRenderer {
       if (def.drawColumn) {
         const steps = (track as { steps?: ArrayLike<number> }).steps;
         def.drawColumn(ctx, colX, w, this.columnPoints(m, rowH, track.numeric), track as never,
-                       steps ? { steps: this.columnPoints(m, rowH, steps) } : undefined);
+                       steps ? { steps: this.columnPoints(m, rowH, steps, true) } : undefined);
         this.bandLeaf.delete(track);
         this.sampled.delete(track);
         this.trackHits.push({ track, mode: "rect", x0: colX, x1: colX + w });
@@ -1518,6 +1518,14 @@ export class TreeRenderer {
     m: RectMetrics,
     rowH: number,
     numeric: ArrayLike<number> | undefined,
+    /**
+     * Take, per pixel row, the value covering most of its leaves instead of
+     * their mean. For a series of levels (regime steps) a mean invents levels
+     * that no regime has and draws a boundary twice; the commonest value is
+     * the regime that owns the row, and a boundary then appears once, at the
+     * row where it falls, whatever the zoom.
+     */
+    commonest = false,
   ): Array<{ y: number; v: number }> {
     if (!numeric) return [];
     const pts: Array<{ y: number; v: number }> = [];
@@ -1534,8 +1542,17 @@ export class TreeRenderer {
     let band = NaN;
     let sum = 0;
     let n = 0;
+    let tally = new Map<number, number>();
     const push = () => {
-      if (!Number.isNaN(band)) pts.push({ y: band + 0.5, v: n ? sum / n : NaN });
+      if (Number.isNaN(band)) return;
+      if (commonest) {
+        let best = NaN;
+        let most = 0;
+        for (const [val, c] of tally) if (c > most) { most = c; best = val; }
+        pts.push({ y: band + 0.5, v: best });
+      } else {
+        pts.push({ y: band + 0.5, v: n ? sum / n : NaN });
+      }
     };
     for (let i = start; i < end; i++) {
       const b = Math.floor(this.rowY(m, i));
@@ -1544,11 +1561,13 @@ export class TreeRenderer {
         band = b;
         sum = 0;
         n = 0;
+        tally = new Map();
       }
       const v = numeric[i];
       if (!Number.isNaN(v)) {
         sum += v;
         n++;
+        if (commonest) tally.set(v, (tally.get(v) ?? 0) + 1);
       }
     }
     push();
