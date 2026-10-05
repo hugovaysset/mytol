@@ -2820,3 +2820,100 @@ describe("curve tracks", () => {
     for (const p of pts.slice(1, -1)) expect(Math.abs(p.v - 0.5)).toBeLessThan(0.1);
   });
 });
+
+describe("bars with negative values", () => {
+  function barCells(numeric: number[], extra: Record<string, unknown> = {}) {
+    const { canvas, calls } = stubCanvas();
+    const ctx = canvas.getContext("2d") as unknown as never;
+    const track = { type: "bar", label: "gap", visible: true, numeric: Float64Array.from(numeric),
+                    color: "#e6b800", ...extra } as unknown as TrackInstance;
+    const def = getTrack("bar")!;
+    def.init?.(track as never, {} as never);
+    numeric.forEach((_, i) => def.drawCell(ctx, 0, i * 10, 200, 10, i, track as never));
+    return { calls, track };
+  }
+
+  it("moves zero in from the left edge and draws a negative bar left of it", () => {
+    const { calls, track } = barCells([-50, 150]);
+    expect(track.vmin).toBe(-50);
+    const bars = calls.rects.filter((q) => q.h > 1 && q.w > 1);
+    // zero sits a quarter of the way across: -50..150 over 200 px
+    expect(bars[0]).toMatchObject({ x: 0, w: 50 });
+    expect(bars[0].color).not.toBe("#e6b800");
+    expect(bars[1]).toMatchObject({ x: 50, w: 150, color: "#e6b800" });
+    // and the axis itself is marked
+    expect(calls.rects.some((q) => q.x === 50 && q.w === 1)).toBe(true);
+  });
+
+  it("leaves an all-positive bar anchored at the left edge, with no axis", () => {
+    const { calls } = barCells([10, 40]);
+    const bars = calls.rects.filter((q) => q.h > 1);
+    expect(bars.map((q) => q.x)).toEqual([0, 0]);
+    expect(bars[1].w).toBe(200);
+    expect(calls.rects.some((q) => q.w === 1)).toBe(false);
+  });
+
+  it("puts no residue guides on a bar of something that is not a length", () => {
+    const { r, calls } = makeRenderer(balanced(16), 800, 600);
+    r.setTracks([{ type: "bar", label: "nt", visible: true,
+                   numeric: Float64Array.from({ length: 16 }, (_, i) => i * 300) }]);
+    r.draw();
+    const fullHeight = calls.rects.filter((q) => q.w === 1 && q.h === 600);
+    expect(fullHeight).toHaveLength(0);
+  });
+
+  it("fills a curve back to zero rather than to its minimum", () => {
+    const xs: number[][] = [];
+    let cur: number[] = [];
+    const ctx = {
+      fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1,
+      save() {}, restore() {}, closePath() {}, fillRect() {},
+      beginPath() { cur = []; },
+      moveTo(x: number) { cur.push(x); },
+      lineTo(x: number) { cur.push(x); },
+      fill() { xs.push(cur); },
+      stroke() {},
+    };
+    const track = { type: "curve", label: "c", visible: true, vmin: -100, vmax: 100 } as TrackInstance;
+    getTrack("curve")!.drawColumn!(ctx as never, 0, 100, [{ y: 0, v: 50 }, { y: 10, v: 60 }], track as never);
+    // the fill starts and ends on the baseline: the middle of a symmetric range
+    expect(xs[0][0]).toBeCloseTo(50, 0);
+  });
+});
+
+describe("ncRNA features in a locus", () => {
+  const nc = (extra: Record<string, unknown> = {}) =>
+    ({ acc: "group-II-D1D4-3", kind: "ncRNA", rfam: "RF02001", s: -3400, e: -1500,
+       fwd: true, key: null, ...extra });
+
+  it("draws a stem-loop in the model's colour, over the gene it lies in", () => {
+    const calls = drawHood(hoodTrack([gene(), nc()]), 20);
+    expect(calls.arc).toBeGreaterThan(0);
+    const band = calls.rects.findIndex((q) => q.color === "#b8860b");
+    expect(band).toBeGreaterThanOrEqual(0);
+    // genes first, the RNA last: it must not be hidden under its own ORF
+    expect(calls.ops.lastIndexOf("fill")).toBeGreaterThan(calls.ops.indexOf("fill"));
+  });
+
+  it("is never painted with the family palette, even if it had a key", () => {
+    const calls = drawHood(hoodTrack([nc({ key: "C1" })], { C1: "#123456" }), 20);
+    expect(calls.rects.some((q) => q.color === "#123456")).toBe(false);
+    expect(calls.fills).not.toContain("#123456");
+  });
+
+  it("keeps only the band when the row is too short for a loop", () => {
+    const calls = drawHood(hoodTrack([nc()]), 4);
+    expect(calls.arc).toBe(0);
+    expect(calls.rects.some((q) => q.color === "#b8860b")).toBe(true);
+  });
+
+  it("wins the hover over the gene it sits in", () => {
+    const { r } = makeRenderer(SIMPLE);
+    const track = hoodTrack([gene(), nc()]);
+    // bp -3000: the gene's own centre, and inside the RNA
+    const offset = ((-3000 + 10000) / 20000) * 260;
+    const got = (r as unknown as { geneAt: (...a: unknown[]) => { gene?: LocusGene } })
+      .geneAt(track, 0, offset, 260);
+    expect(got.gene?.kind).toBe("ncRNA");
+  });
+});

@@ -378,24 +378,60 @@ export function heatValueColor(v: number, track: TrackInstance): string | null {
   return rampColor(v, { colors: REDS, vmin: track.vmin ?? 0, vmax: track.vmax ?? 1 });
 }
 
-/** Continuous value as a bar. */
+/**
+ * Where a bar column puts zero, as a fraction of its width. A column of
+ * non-negative values starts at its left edge as it always did; once a value
+ * is negative (an overlap measured as a negative gap, say) zero moves in, and
+ * negative bars grow left of it.
+ */
+export function barZero(track: TrackInstance): number {
+  const lo = Math.min(track.vmin ?? 0, 0);
+  const hi = Math.max(track.vmax ?? 1, 0);
+  return hi > lo ? (0 - lo) / (hi - lo) : 0;
+}
+
+/** Colour of a bar below zero: the track's own, unless it names another. */
+const NEGATIVE_BAR = "#9aa3ad";
+
+/** Continuous value as a bar, from a zero axis. */
 registerTrack("bar", {
   width: 60,
   wideRing: true,
   init(track) {
-    if (track.numeric && track.vmax == null) {
+    if (track.numeric && (track.vmax == null || track.vmin == null)) {
+      let lo = Infinity;
       let hi = -Infinity;
-      for (const v of track.numeric) if (!Number.isNaN(v) && v > hi) hi = v;
-      track.vmax = Number.isFinite(hi) ? hi : 1;
+      for (const v of track.numeric) {
+        if (Number.isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      if (track.vmax == null) track.vmax = Number.isFinite(hi) ? hi : 1;
+      // Only a negative minimum matters: it is what moves the zero axis.
+      if (track.vmin == null) track.vmin = Number.isFinite(lo) ? Math.min(lo, 0) : 0;
     }
   },
   drawCell(ctx, x, y, w, h, leafIndex, track) {
     const v = track.numeric?.[leafIndex];
     if (v == null || Number.isNaN(v)) return;
-    const max = track.vmax ?? 1;
-    const frac = max > 0 ? Math.max(0, Math.min(1, v / max)) : 0;
-    ctx.fillStyle = track.color ?? "#7fa8bd";
-    ctx.fillRect(x, y + h * 0.1, w * frac, h * 0.8);
+    const lo = Math.min(track.vmin ?? 0, 0);
+    const hi = Math.max(track.vmax ?? 1, 0);
+    if (!(hi > lo)) return;
+    const z = barZero(track);
+    const f = (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo);
+    const x0 = x + w * z;
+    const x1 = x + w * f;
+    if (lo < 0) {
+      // The axis itself, faint, so a row with a zero still shows where zero is.
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.fillStyle = "#888888";
+      ctx.fillRect(x0, y, 1, h);
+      ctx.restore();
+    }
+    ctx.fillStyle = v < 0 ? ((track as { negColor?: string }).negColor ?? NEGATIVE_BAR)
+                          : (track.color ?? "#7fa8bd");
+    ctx.fillRect(Math.min(x0, x1), y + h * 0.1, Math.abs(x1 - x0), h * 0.8);
   },
 });
 
@@ -433,7 +469,12 @@ registerTrack("curve", {
   drawColumn(ctx, x, w, pts, track) {
     if (!pts.length) return;
     const color = track.color ?? "#2b6cb0";
-    const x0 = curveX(track.vmin ?? 0, x, w, track);
+    // The fill runs back to zero, not to the minimum: with negative values in
+    // range a trend below zero must read as below something. A range that
+    // does not include zero keeps its old baseline at the nearer edge.
+    const lo = track.vmin ?? 0;
+    const hi = track.vmax ?? 1;
+    const x0 = curveX(Math.max(lo, Math.min(hi, 0)), x, w, track);
     const top = pts[0].y;
     const bottom = pts[pts.length - 1].y;
 
@@ -612,6 +653,17 @@ export interface LocusGene {
    * is in `domainsOnGenes` mode.
    */
   domains?: LocusDomain[];
+  /**
+   * `"ncRNA"` for a non-coding feature (an Rfam hit) rather than a gene. Drawn
+   * as a stem-loop on the contig line instead of an arrow, never coloured by
+   * the family palette, and on top of the genes it usually lies inside.
+   */
+  kind?: "ncRNA";
+  /** ncRNA only: the covariance model's name, its Rfam accession and score. */
+  model?: string | null;
+  rfam?: string | null;
+  score?: number | null;
+  evalue?: number | null;
 }
 
 /** One Pfam hit placed on a neighbourhood gene. */
@@ -676,6 +728,53 @@ function traceGene(
     ctx.lineTo(gx1, midY + boxH / 2);
     ctx.closePath();
   }
+}
+
+/**
+ * Colours of the group II intron covariance models, the same hues as their
+ * score heatmaps so a glyph and its column read as one thing. Any other model
+ * falls back to `NCRNA_DEFAULT`.
+ */
+export const NCRNA_COLORS: Record<string, string> = {
+  RF01998: "#cb181d", RF01999: "#e6550d", RF02001: "#b8860b", RF02003: "#238b45",
+  RF02004: "#088a8a", RF02005: "#2171b5", RF02012: "#7a3b9e", RF00029: "#444444",
+};
+const NCRNA_DEFAULT = "#d6336c";
+
+export function ncrnaColor(g: LocusGene): string {
+  return (g.rfam && NCRNA_COLORS[g.rfam]) || NCRNA_DEFAULT;
+}
+
+/**
+ * An ncRNA as a stem-loop: a thin band over the hit's extent on the contig
+ * line, and at its middle a stem rising to a small loop. Nothing else in the
+ * column has a round mark, so it cannot be mistaken for a gene at any width,
+ * and it is drawn after the genes because an intron's RNA lies over the very
+ * ORF the locus is centred on. Below a few pixels of row only the band fits.
+ */
+function drawNcrna(
+  ctx: DrawTarget, gx0: number, gx1: number, y: number, h: number, midY: number,
+  boxH: number, g: LocusGene,
+): void {
+  const color = ncrnaColor(g);
+  const bandH = Math.max(1, boxH * 0.4);
+  ctx.fillStyle = color;
+  ctx.fillRect(gx0, midY - bandH / 2, Math.max(1.5, gx1 - gx0), bandH);
+  if (h < 6) return;
+  const cx = (gx0 + gx1) / 2;
+  const r = Math.max(1.2, Math.min(3, h * 0.16));
+  const stemTop = Math.max(y + r + 0.5, midY - boxH / 2 - r);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, midY - bandH / 2);
+  ctx.lineTo(cx, stemTop);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, stemTop - r, r, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.stroke();
 }
 
 /** Perpendicular spacing of the defence hatch, in screen px. */
@@ -778,6 +877,7 @@ registerTrack("neighbourhood", {
     // other families and where on the gene any of them sat.
     const byDomain = !!track.domainsOnGenes;
     for (const g of rec.genes) {
+      if (g.kind === "ncRNA") continue;
       const gx0 = x + (g.s + span) * scale;
       const gx1 = x + (g.e + span) * scale;
       const gw = Math.max(1, gx1 - gx0);
@@ -857,6 +957,10 @@ registerTrack("neighbourhood", {
         ctx.lineWidth = 1;
         ctx.strokeRect(gx0 - 0.5, midY - boxH / 2 - 0.5, gw + 1, boxH + 1);
       }
+    }
+    for (const g of rec.genes) {
+      if (g.kind !== "ncRNA") continue;
+      drawNcrna(ctx, x + (g.s + span) * scale, x + (g.e + span) * scale, y, h, midY, boxH, g);
     }
   },
   /**
