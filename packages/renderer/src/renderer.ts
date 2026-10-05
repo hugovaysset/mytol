@@ -945,7 +945,9 @@ export class TreeRenderer {
     let bestD = Infinity;
     for (const g of rec.genes) {
       if (bp < g.s || bp > g.e) continue;
-      const d = Math.abs(bp - (g.s + g.e) / 2);
+      // An ncRNA is drawn on top of the gene it usually sits in, so under the
+      // pointer it wins over that gene; between ncRNAs, nearest centre again.
+      const d = Math.abs(bp - (g.s + g.e) / 2) - (g.kind === "ncRNA" ? 1e12 : 0);
       if (d < bestD) { bestD = d; best = g; }
     }
     if (!best) return {};
@@ -1456,7 +1458,10 @@ export class TreeRenderer {
         continue;
       }
 
-      if (def.wideRing && track.vmax && track.vmax > 0) {
+      // Residue guides belong to a protein-length axis: only a domain layout
+      // has one. A bar or curve of anything else (a distance in nt, a score)
+      // would get lines at "500" and "1000" that mean nothing on its scale.
+      if (track.type === "domains" && track.vmax && track.vmax > 0) {
         ctx.save();
         ctx.fillStyle = this.style.dimmed;
         for (const aa of LENGTH_GUIDES) {
@@ -2192,7 +2197,7 @@ export class TreeRenderer {
       // Length guides, as iToL's protein-domain dataset draws them: circles at
       // round numbers of residues, so a layout can be read off the ring
       // without measuring it against the longest protein in the set.
-      if (def.wideRing && track.vmax && track.vmax > 0) {
+      if (track.type === "domains" && track.vmax && track.vmax > 0) {
         ctx.save();
         ctx.strokeStyle = this.style.dimmed;
         ctx.lineWidth = 1;
